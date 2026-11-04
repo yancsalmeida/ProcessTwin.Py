@@ -184,3 +184,40 @@ def test_api_bridge_endpoints():
     
     # Toggle back
     client.post("/api/bridge/toggle")
+
+
+@pytest.mark.asyncio
+async def test_bridge_send_frame_channel_mode():
+    bridge = IndustrialTelemetryBridge(
+        engine_url="http://mock-net-engine:5100",
+        ingestion_mode="channel"
+    )
+    bridge.active_batch_id = "batch-chan-test"
+    bridge.connected = True
+
+    frame = PlantTelemetry(
+        timestamp=datetime(2026, 11, 4, 12, 0, 0, tzinfo=timezone.utc),
+        tank_level_m=5.0,
+        tank_volume_m3=35.0,
+        feed_flow_m3_h=20.0,
+        discharge_flow_m3_h=20.0,
+        reactor_temp_c=90.0,
+        reactor_pressure_bar=2.5,
+        cooling_valve_pct=50.0,
+        feed_valve_open=True,
+        status=PlantStatus.NORMAL
+    )
+
+    channel_resp = MagicMock()
+    channel_resp.status_code = 202
+    channel_resp.json.return_value = {"acceptedCount": 6, "currentQueueDepth": 12}
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {"status": "InProgress", "code": "BATCH-CHAN-TEST"})
+        with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock, return_value=channel_resp) as mock_post:
+            res = await bridge.send_frame(frame)
+            assert res == {"acceptedCount": 6, "currentQueueDepth": 12}
+            assert bridge.frames_sent == 1
+            assert bridge.measurements_ingested == 6
+            assert "/api/telemetry/ingest/channel" in mock_post.call_args.args[0]
+    await bridge.close()

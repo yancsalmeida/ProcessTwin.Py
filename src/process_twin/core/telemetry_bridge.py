@@ -12,6 +12,7 @@ class BridgeStatus(BaseModel):
     enabled: bool = True
     connected: bool = False
     engine_url: str = "http://localhost:5100"
+    ingestion_mode: str = "transactional"
     active_batch_id: Optional[str] = None
     active_batch_code: Optional[str] = None
     frames_sent: int = 0
@@ -27,12 +28,22 @@ class IndustrialTelemetryBridge:
     the enterprise IndustrialTelemetry.Engine (.NET 8 + PostgreSQL 16) microservice.
     """
 
-    def __init__(self, engine_url: Optional[str] = None, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        engine_url: Optional[str] = None,
+        enabled: bool = True,
+        ingestion_mode: Optional[str] = None
+    ) -> None:
         self.engine_url = (
             engine_url
             or os.getenv("TELEMETRY_ENGINE_URL")
             or "http://localhost:5100"
         ).rstrip("/")
+        self.ingestion_mode = (
+            ingestion_mode
+            or os.getenv("TELEMETRY_INGESTION_MODE")
+            or "transactional"
+        ).lower()
         self.enabled = enabled
         self.connected = False
         self.active_batch_id: Optional[str] = None
@@ -206,12 +217,21 @@ class IndustrialTelemetryBridge:
             "measurements": measurements
         }
 
+        endpoint = (
+            "/api/telemetry/ingest/channel"
+            if self.ingestion_mode == "channel"
+            else "/api/telemetry/ingest"
+        )
+
         try:
-            resp = await client.post(f"{self.engine_url}/api/telemetry/ingest", json=payload)
-            if resp.status_code == 200:
+            resp = await client.post(f"{self.engine_url}{endpoint}", json=payload)
+            if resp.status_code in (200, 202):
                 result = resp.json()
                 self.frames_sent += 1
-                self.measurements_ingested += result.get("measurementsIngested", 0)
+                self.measurements_ingested += result.get(
+                    "measurementsIngested",
+                    result.get("acceptedCount", len(measurements))
+                )
                 self.alerts_triggered += result.get("alertsTriggered", 0)
                 self.last_sync_utc = datetime.now(timezone.utc).isoformat()
                 self.connected = True
@@ -296,6 +316,7 @@ class IndustrialTelemetryBridge:
             enabled=self.enabled,
             connected=self.connected,
             engine_url=self.engine_url,
+            ingestion_mode=self.ingestion_mode,
             active_batch_id=self.active_batch_id,
             active_batch_code=self.active_batch_code,
             frames_sent=self.frames_sent,
