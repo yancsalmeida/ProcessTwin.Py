@@ -4,6 +4,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Asyncio](https://img.shields.io/badge/asyncio-event--driven-orange.svg)](https://docs.python.org/3/library/asyncio.html)
+[![.NET 8 Engine Bridge](https://img.shields.io/badge/.NET_8_Bridge-Integrated-512BD4?logo=dotnet)](https://github.com/yancsalmeida/IndustrialTelemetry.Engine)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -16,6 +17,7 @@ An asynchronous, event-driven industrial Digital Twin simulating a coupled chemi
 ## Technical Highlights
 
 - **Event-Driven Asynchronous Runtime:** Built on Python's `asyncio` event loop and FastAPI `lifespan` background tasks, executing continuous 5 Hz discrete integration without blocking incoming HTTP requests or WebSocket broadcasts.
+- **Enterprise .NET 8 Telemetry Bridge:** Continuous 1 Hz asynchronous forwarder transmitting sensor snapshots to [**`IndustrialTelemetry.Engine`**](https://github.com/yancsalmeida/IndustrialTelemetry.Engine), managing batch lifecycles (`Scheduled` $\to$ `InProgress` $\to$ `Completed`/`Aborted`), automated batch negotiation, and propagating SIS emergency trip aborts into PostgreSQL 16.
 - **Physical & Thermodynamic Rigor:** Coupled mass and non-linear dynamic energy balances modeling buffer surge dynamics, Arrhenius reaction kinetics, cooling jacket heat exchange, and Antoine vapor pressure approximation.
 - **Transmitter Noise Emulation:** Injects Gaussian white noise ($\mathcal{N}(0, \sigma^2)$) on level, temperature, and pressure signals to emulate real-world 4–20 mA industrial transmitter sensor drift.
 - **Safety Instrumented Systems (SIS / IEC 61511):** Continuous automated evaluation of safety interlocks (HAZOP trip conditions). Automatically halts feed flow ($XV-101$) and floods cooling jackets upon critical level accumulation or thermal runaway.
@@ -65,36 +67,93 @@ Thermal runaways cause exponential boiling and vessel overpressure, triggering e
 
 ## Architecture & Data Flow
 
+```mermaid
+flowchart TD
+    subgraph Engine["FastAPI Lifespan Runtime"]
+        Loop["Discrete Integration Loop (5 Hz)"]
+        Twin["PlantDigitalTwin (In-Memory State)\n• Euler ODE Solver\n• Gaussian Sensor Drift\n• SIS Safety Trip Interlocks"]
+        Loop --> Twin
+    end
+
+    subgraph InternalPipes["Internal Streams & Persistence"]
+        WS["WebSocket Stream (/ws/telemetry @ 5 Hz)\nBroadcasts Real-Time JSON Frames"]
+        SQLite[("aiosqlite Database\nAsynchronous Time-Series & Alarm Logs")]
+        Twin -->|"5 Hz Stream"| WS
+        Twin -->|"1 Hz Snapshots"| SQLite
+    end
+
+    subgraph ExternalBridge["Cross-Service Enterprise Forwarding"]
+        BridgeClient["IndustrialTelemetryBridge (httpx Async)\n• Batch Negotiation\n• Sensor Mapping\n• Emergency Abort Forwarding"]
+        Twin -->|"1 Hz Stream / SIS Trips"| BridgeClient
+    end
+
+    subgraph HMI["SCADA Operator Station"]
+        Dashboard["Browser SCADA HMI\n• Dynamic SVG Piping & Instrumentation\n• HTML5 Canvas Strip Charts\n• Setpoint Overrides (/api/actuators)"]
+        WS --> Dashboard
+    end
+
+    subgraph DotNet["Enterprise Backend (.NET 8)"]
+        NetEngine["IndustrialTelemetry.Engine (:5100)\nPOST /api/telemetry/ingest\nPOST /api/batches/{id}/abort"]
+        PG[("PostgreSQL 16\nComposite Time-Series Indexing")]
+        BridgeClient == "HTTP Stream / REST API" ==> NetEngine
+        NetEngine --> PG
+    end
 ```
-                           +----------------------------------------+
-                           |     FastAPI Lifespan Background Task   |
-                           |   (5 Hz Discrete Integration Loop)     |
-                           +-------------------+--------------------+
-                                               |
-                                     Generates Telemetry Frame
-                                               |
-                                               v
-                             +-----------------+-----------------+
-                             |   PlantDigitalTwin (In-Memory)   |
-                             |   - Differential Equations        |
-                             |   - Gaussian Noise Injection      |
-                             |   - SIS Safety Interlock Rules   |
-                             +-----------------+-----------------+
-                                               |
-                     +-------------------------+-------------------------+
-                     |                                                   |
-                     v (Broadcast @ 5 Hz)                                v (Persist @ 1 Hz)
-       +-------------+-------------+                       +-------------+-------------+
-       |   WebSocket /ws/telemetry |                       |  aiosqlite Database Engine|
-       |  (JSON Frame Streaming)   |                       |    (Time-Series & Alarms) |
-       +-------------+-------------+                       +-------------+-------------+
-                     |                                                   |
-                     v                                                   v
-       +-------------+-------------+                       +-------------+-------------+
-       |   Interactive SCADA HMI   | <--- REST API Setpoints |  Historical Audit Log   |
-       |  (SVG / Canvas / Sliders) |      POST /api/actuators|  GET /api/telemetry/... |
-       +---------------------------+                       +---------------------------+
+
+---
+
+## 🌐 Enterprise .NET 8 Telemetry Bridge (.NET 8 + PostgreSQL 16)
+
+`ProcessTwin.Py` features a built-in asynchronous client bridge ([`telemetry_bridge.py`](src/process_twin/core/telemetry_bridge.py)) that connects this physical plant simulator with the enterprise-grade [**`IndustrialTelemetry.Engine`**](https://github.com/yancsalmeida/IndustrialTelemetry.Engine) microservice:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SCADA as ProcessTwin SCADA HMI
+    participant Twin as ProcessTwin Engine (Python)
+    participant Bridge as IndustrialTelemetryBridge
+    participant NetAPI as IndustrialTelemetry.Engine (.NET 8)
+    participant PG as PostgreSQL 16
+
+    Note over Twin,NetAPI: 1. Auto-Negotiation & Initialization
+    Twin->>Bridge: Startup Healthcheck
+    Bridge->>NetAPI: GET /health
+    NetAPI-->>Bridge: 200 OK (Healthy)
+    Bridge->>NetAPI: GET /api/batches?status=InProgress
+    alt No active batch found
+        Bridge->>NetAPI: POST /api/batches (BATCH-TWIN-...)
+        NetAPI-->>Bridge: 201 Created (batch_id)
+        Bridge->>NetAPI: POST /api/batches/{id}/start
+        NetAPI-->>Bridge: 200 OK (Status: InProgress)
+    end
+
+    Note over Twin,NetAPI: 2. Continuous 1 Hz Stream Ingestion
+    loop Every 1 Second
+        Twin->>Bridge: Send Sensor Snapshot
+        Bridge->>NetAPI: POST /api/telemetry/ingest (TT-101, PT-101, LT-101...)
+        NetAPI->>PG: Evaluate Alert Rules & Ingest Time-Series
+        NetAPI-->>Bridge: 200 OK (measurementsIngested: 6, alertsTriggered: N)
+        Bridge-->>SCADA: Update Live Metrics & Ingestion Counters
+    end
+
+    Note over Twin,NetAPI: 3. Safety Instrumented Trip Handling
+    opt Critical Excursion (Thermal Runaway / High Level)
+        Twin->>Twin: SIS Interlock Trips (Flood Cooling, Shut Feed)
+        Twin->>Bridge: Propagate Emergency Abort
+        Bridge->>NetAPI: POST /api/batches/{id}/abort {"reason": "SIS trip..."}
+        NetAPI->>PG: Transition to Aborted & Record Compliance Audit Trail
+        NetAPI-->>Bridge: 200 OK
+    end
 ```
+
+### Bridge REST Endpoints in ProcessTwin:
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/bridge/status` | Real-time connectivity, active batch metadata, and transmission metrics |
+| `POST` | `/api/bridge/toggle` | Enables or pauses background streaming to the .NET engine |
+| `POST` | `/api/bridge/batch/new` | Forces the creation and start of a fresh batch session in .NET Engine |
+| `POST` | `/api/bridge/batch/complete` | Completes active batch in .NET Engine and returns compliance analytics |
+| `GET` | `/api/bridge/batch/summary` | Fetches batch analytics summary from .NET Engine |
 
 ---
 
@@ -117,21 +176,23 @@ ProcessTwin.Py/
 │       │   ├── __init__.py
 │       │   ├── models.py           # Pydantic v2 schemas & domain enums
 │       │   ├── alarms.py           # Threshold rules & SIS interlock evaluator
-│       │   └── simulator.py        # PlantDigitalTwin Euler integrator & state machine
+│       │   ├── simulator.py        # PlantDigitalTwin Euler integrator & state machine
+│       │   └── telemetry_bridge.py # Asynchronous .NET 8 IndustrialTelemetry client
 │       ├── db/
 │       │   ├── __init__.py
 │       │   └── storage.py          # Asynchronous SQLite time-series storage
 │       └── static/
-│           └── index.html          # SCADA HMI (SVG PFD, Canvas trend, Setpoints)
+│           └── index.html          # SCADA HMI (SVG PFD, Canvas trend, Setpoints & Bridge)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_models.py              # Pydantic schema validation & bounds tests
 │   ├── test_alarms.py              # HAZOP warning and trip logic tests
 │   ├── test_simulator.py           # Mass/energy balances & automated shutdown tests
 │   ├── test_storage.py             # Async SQLite CRUD & index tests
-│   └── test_api.py                 # REST endpoints and WebSocket integration tests
+│   ├── test_api.py                 # REST endpoints and WebSocket integration tests
+│   └── test_bridge.py              # .NET Bridge client & endpoint integration tests
 ├── Dockerfile                      # Production slim image with uv packaging
-├── docker-compose.yml              # Single-command container orchestration
+├── docker-compose.yml              # Multi-network container orchestration
 ├── pyproject.toml                  # PEP 621 packaging and pytest configuration
 └── README.md
 ```
@@ -173,7 +234,7 @@ uv run uvicorn process_twin.api.app:app --host 127.0.0.1 --port 8000 --reload
 uv run pytest -v
 ```
 
-All 22 unit, integration, and WebSocket tests pass cleanly:
+All 33 unit, integration, and WebSocket tests pass cleanly:
 ```text
 tests/test_alarms.py::test_normal_operating_conditions PASSED
 tests/test_alarms.py::test_level_high_warning PASSED
@@ -185,6 +246,14 @@ tests/test_api.py::test_get_current_telemetry PASSED
 tests/test_api.py::test_override_actuators PASSED
 tests/test_api.py::test_alarms_endpoints PASSED
 tests/test_api.py::test_websocket_telemetry_stream PASSED
+tests/test_bridge.py::test_bridge_status_model_defaults PASSED
+tests/test_bridge.py::test_bridge_check_health_success PASSED
+tests/test_bridge.py::test_bridge_check_health_failure PASSED
+tests/test_bridge.py::test_bridge_ensure_active_batch_existing PASSED
+tests/test_bridge.py::test_bridge_ensure_active_batch_creates_new_if_none PASSED
+tests/test_bridge.py::test_bridge_send_frame_payload_structure PASSED
+tests/test_bridge.py::test_bridge_abort_batch_on_interlock PASSED
+tests/test_bridge.py::test_api_bridge_endpoints PASSED
 tests/test_models.py::test_plant_telemetry_valid PASSED
 tests/test_models.py::test_plant_telemetry_invalid_level PASSED
 tests/test_models.py::test_actuator_command_validation PASSED
@@ -198,13 +267,14 @@ tests/test_simulator.py::test_alarm_acknowledgment PASSED
 tests/test_storage.py::test_insert_and_retrieve_telemetry PASSED
 tests/test_storage.py::test_insert_and_retrieve_alarms PASSED
 
-======================== 22 passed in 0.30s =========================
+======================== 33 passed in 0.51s =========================
 ```
 
 ---
 
 ## API Specification
 
+### Plant Telemetry & Supervisory Control
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Serves the interactive SCADA Operator Dashboard |
@@ -212,9 +282,19 @@ tests/test_storage.py::test_insert_and_retrieve_alarms PASSED
 | `GET` | `/api/telemetry/current` | Returns instantaneous snapshot of plant sensors |
 | `GET` | `/api/telemetry/history?limit=60` | Retrieves chronological historical telemetry from SQLite |
 | `POST` | `/api/actuators` | Applies operator supervisory overrides (cooling valve, feed flow) |
+| `POST` | `/api/simulation/reset` | Resets plant to initial steady-state conditions (85°C) |
 | `GET` | `/api/alarms` | Lists active annunciated alarms and safety trip states |
 | `POST` | `/api/alarms/{id}/acknowledge` | Acknowledges an active safety alarm |
 | `WS` | `/ws/telemetry` | Real-time 5 Hz WebSocket feed streaming JSON telemetry |
+
+### Enterprise .NET 8 Telemetry Bridge
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/bridge/status` | Real-time connectivity and transmission metrics |
+| `POST` | `/api/bridge/toggle` | Enables or pauses streaming to the .NET engine |
+| `POST` | `/api/bridge/batch/new` | Forces initiation of a new batch session in .NET Engine |
+| `POST` | `/api/bridge/batch/complete` | Completes active batch and returns compliance summary |
+| `GET` | `/api/bridge/batch/summary` | Fetches batch analytics summary from .NET Engine |
 
 ---
 
@@ -225,7 +305,8 @@ Developed by **Yan Almeida**, Chemical Engineer (BSc from Budapest University of
 This project demonstrates proficiency in:
 - Modern Python (3.11+, typed async/await, Pydantic v2).
 - Real-time communications (WebSockets at 5 Hz, concurrent client broadcasting).
+- Distributed systems integration (continuous HTTP streaming, batch lifecycle management, automated safety interlock propagation to .NET 8).
 - High-integrity backend design (Safety Instrumented Systems, automated interlocks, non-blocking asynchronous databases).
 - Applied computational engineering (discrete numerical balances, differential equations, dynamic state estimation).
 
-Connect on [LinkedIn](https://www.linkedin.com/in/yan-almeida/) or explore more projects on [GitHub](https://github.com/yancsalmeida).
+Connect on [LinkedIn](https://www.linkedin.com/in/yancsa/) or explore more projects on [GitHub](https://github.com/yancsalmeida).
