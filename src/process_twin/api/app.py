@@ -3,7 +3,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Set
+from typing import Set, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,18 +14,20 @@ from process_twin.core.models import (
     AlarmEvent,
 )
 from process_twin.core.simulator import PlantDigitalTwin
+from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge, BridgeStatus
 from process_twin.db.storage import TelemetryDatabase
 
 # Global engine instances
 DB_PATH = os.getenv("PROCESS_TWIN_DB", "processtwin.db")
 db = TelemetryDatabase(DB_PATH)
 twin = PlantDigitalTwin()
+bridge = IndustrialTelemetryBridge()
 active_websockets: Set[WebSocket] = set()
 background_task: asyncio.Task = None
 
 
 async def telemetry_background_loop() -> None:
-    """Continuous 5 Hz simulation loop broadcasting to WebSockets and persisting to SQL."""
+    """Continuous 5 Hz simulation loop broadcasting to WebSockets, persisting to SQLite and forwarding to .NET."""
     step_count = 0
     while True:
         try:
@@ -43,11 +45,18 @@ async def telemetry_background_loop() -> None:
                         disconnected.add(ws)
                 active_websockets.difference_update(disconnected)
 
-            # Persist to database at 1 Hz (every 5 steps) or immediately upon alarm/interlock
+            # Persist to local database at 1 Hz (every 5 steps) or immediately upon alarm/interlock
             if step_count % 5 == 0 or frame.interlock_tripped:
                 await db.insert_telemetry(frame)
                 for alarm in twin.active_alarms:
                     await db.insert_alarm(alarm)
+
+                # Forward real-time stream to .NET IndustrialTelemetry.Engine
+                if bridge.enabled:
+                    if frame.interlock_tripped and bridge.active_batch_id:
+                        await bridge.abort_batch(reason="Emergency SIS interlock tripped on ProcessTwin.")
+                    else:
+                        await bridge.send_frame(frame)
 
             await asyncio.sleep(0.2)
         except asyncio.CancelledError:
@@ -61,6 +70,8 @@ async def telemetry_background_loop() -> None:
 async def lifespan(app: FastAPI):
     global background_task
     await db.init_db()
+    # Check .NET IndustrialTelemetry.Engine connectivity on startup
+    await bridge.check_health()
     background_task = asyncio.create_task(telemetry_background_loop())
     yield
     if background_task:
@@ -69,6 +80,7 @@ async def lifespan(app: FastAPI):
             await background_task
         except asyncio.CancelledError:
             pass
+    await bridge.close()
 
 
 app = FastAPI(
@@ -129,6 +141,55 @@ async def acknowledge_alarm(alarm_id: str) -> dict:
     if not found:
         raise HTTPException(status_code=404, detail=f"Alarm '{alarm_id}' not found.")
     return {"status": "acknowledged", "alarm_id": alarm_id}
+
+
+# --- IndustrialTelemetry.Engine (.NET 8) Bridge Endpoints ---
+
+@app.get("/api/bridge/status", response_model=BridgeStatus)
+async def get_bridge_status() -> BridgeStatus:
+    """Returns real-time connectivity, active batch metadata, and transmission metrics for the .NET engine bridge."""
+    await bridge.check_health()
+    return bridge.get_status()
+
+
+@app.post("/api/bridge/toggle")
+async def toggle_bridge() -> dict:
+    """Enables or disables continuous telemetry streaming to the .NET engine."""
+    bridge.enabled = not bridge.enabled
+    return {"status": "success", "enabled": bridge.enabled}
+
+
+@app.post("/api/bridge/batch/new")
+async def start_new_bridge_batch() -> dict:
+    """Forces the creation and start of a fresh batch session in IndustrialTelemetry.Engine."""
+    bridge.active_batch_id = None
+    bridge.active_batch_code = None
+    batch_id = await bridge.ensure_active_batch()
+    if not batch_id:
+        raise HTTPException(status_code=502, detail=f"Failed to start batch in .NET Engine: {bridge.last_error}")
+    return {
+        "status": "success",
+        "batch_id": batch_id,
+        "batch_code": bridge.active_batch_code
+    }
+
+
+@app.post("/api/bridge/batch/complete")
+async def complete_bridge_batch() -> dict:
+    """Completes the current batch run in .NET Engine and returns the compliance analytics summary."""
+    summary = await bridge.complete_batch()
+    if not summary:
+        raise HTTPException(status_code=400, detail="No active batch to complete or request failed.")
+    return {"status": "success", "summary": summary}
+
+
+@app.get("/api/bridge/batch/summary")
+async def get_bridge_batch_summary(batch_id: Optional[str] = None) -> dict:
+    """Fetches batch analytics summary from .NET Engine."""
+    summary = await bridge.get_summary(batch_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Batch summary not available.")
+    return summary
 
 
 @app.websocket("/ws/telemetry")

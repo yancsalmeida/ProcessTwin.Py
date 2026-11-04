@@ -285,6 +285,29 @@
       <div id="sisTripAlert" style="display:none; background:rgba(244,63,94,0.15); border:1px solid #f43f5e; color:#fb7185; border-radius:6px; padding:0.6rem; font-size:0.75rem; font-family:var(--font-mono); margin-top:0.75rem;">
         🚨 <b>SIS INTERLOCK TRIPPED</b><br/>Cooling valve flooded to 100%. Click "Reset Plant State" to restore normal control.
       </div>
+
+      <!-- Enterprise .NET Telemetry Bridge Panel -->
+      <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+          <h3 style="font-size:0.8rem; font-weight:700; color:var(--accent-blue); text-transform:uppercase;">
+            .NET Telemetry Engine
+          </h3>
+          <span id="bridgeStatusBadge" style="font-size:0.7rem; font-family:var(--font-mono); padding:0.15rem 0.45rem; border-radius:4px; background:#1e293b; color:#94a3b8; border:1px solid #334155;">
+            Checking...
+          </span>
+        </div>
+        <div style="font-size:0.72rem; font-family:var(--font-mono); color:var(--text-secondary); line-height:1.45; margin-bottom:0.65rem;">
+          <div>Port: <a href="http://localhost:5100/index.html" target="_blank" style="color:var(--accent-blue); text-decoration:none;">5100 (Swagger UI) &nearr;</a></div>
+          <div>Batch: <span id="bridgeBatchCode" style="color:#f8fafc; font-weight:600;">None</span></div>
+          <div>Ingested: <span id="bridgeIngestedCount" style="color:#34d399; font-weight:600;">0</span> msgs (<span id="bridgeFramesCount">0</span> frames)</div>
+          <div>Rules Tripped: <span id="bridgeAlertsCount" style="color:#fbbf24; font-weight:600;">0</span> in PG</div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.4rem;">
+          <button class="btn-action" style="font-size:0.72rem; padding:0.45rem;" onclick="newBridgeBatch()">New Batch</button>
+          <button class="btn-action" style="font-size:0.72rem; padding:0.45rem;" onclick="completeBridgeBatch()">Complete</button>
+        </div>
+        <button class="btn-action" id="btnToggleBridge" style="font-size:0.72rem; padding:0.45rem; margin-top:0.4rem;" onclick="toggleBridge()">Streaming: ENABLED</button>
+      </div>
     </aside>
 
     <!-- Right Workspace -->
@@ -734,9 +757,71 @@
       } catch (e) {}
     }
 
+    async function pollBridgeStatus() {
+      try {
+        const res = await fetch('/api/bridge/status');
+        const data = await res.json();
+        const badge = document.getElementById('bridgeStatusBadge');
+        const batchCode = document.getElementById('bridgeBatchCode');
+        const ingested = document.getElementById('bridgeIngestedCount');
+        const frames = document.getElementById('bridgeFramesCount');
+        const alerts = document.getElementById('bridgeAlertsCount');
+        const btnToggle = document.getElementById('btnToggleBridge');
+
+        if (data.connected) {
+          badge.textContent = 'ONLINE (Port 5100)';
+          badge.style.background = 'rgba(16,185,129,0.15)';
+          badge.style.color = '#34d399';
+          badge.style.borderColor = 'rgba(16,185,129,0.4)';
+        } else {
+          badge.textContent = data.enabled ? 'DISCONNECTED' : 'DISABLED';
+          badge.style.background = 'rgba(244,63,94,0.15)';
+          badge.style.color = '#fb7185';
+          badge.style.borderColor = 'rgba(244,63,94,0.4)';
+        }
+
+        batchCode.textContent = data.active_batch_code || (data.connected ? 'Auto-negotiating...' : 'None');
+        ingested.textContent = data.measurements_ingested;
+        frames.textContent = data.frames_sent;
+        alerts.textContent = data.alerts_triggered;
+        btnToggle.textContent = data.enabled ? 'Streaming: ENABLED' : 'Streaming: PAUSED';
+        btnToggle.style.color = data.enabled ? '#34d399' : '#94a3b8';
+      } catch(e) {}
+    }
+
+    window.toggleBridge = async function() {
+      await fetch('/api/bridge/toggle', { method: 'POST' });
+      pollBridgeStatus();
+    };
+
+    window.newBridgeBatch = async function() {
+      try {
+        const res = await fetch('/api/bridge/batch/new', { method: 'POST' });
+        const data = await res.json();
+        alert(`New batch initiated in .NET Engine: ${data.batch_code}`);
+        pollBridgeStatus();
+      } catch (e) {
+        alert('Error creating new batch: ' + e);
+      }
+    };
+
+    window.completeBridgeBatch = async function() {
+      try {
+        const res = await fetch('/api/bridge/batch/complete', { method: 'POST' });
+        const data = await res.json();
+        const s = data.summary;
+        alert(`Batch Completed in .NET Engine!\n\nCode: ${s.batchCode}\nDuration: ${s.duration || 'N/A'}\nTotal Measurements: ${s.totalMeasurements}\nAvg Temp: ${s.avgTemperatureC ? s.avgTemperatureC.toFixed(1) + ' °C' : 'N/A'}\nMax Temp: ${s.maxTemperatureC ? s.maxTemperatureC.toFixed(1) + ' °C' : 'N/A'}\nAlerts: ${s.totalAlerts} (Critical: ${s.criticalAlerts})`);
+        pollBridgeStatus();
+      } catch (e) {
+        alert('No active batch to complete or error occurred.');
+      }
+    };
+
     initHistory();
     connectWebSocket();
     setInterval(pollAlarms, 1000);
+    setInterval(pollBridgeStatus, 1500);
+    pollBridgeStatus();
   </script>
 </body>
 </html>

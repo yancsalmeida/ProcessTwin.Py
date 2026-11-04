@@ -9,8 +9,12 @@ services:
     environment:
       - PROCESS_TWIN_DB=/app/data/processtwin.db
       - PYTHONUNBUFFERED=1
+      - TELEMETRY_ENGINE_URL=http://industrial-telemetry-api:5100
     volumes:
       - twin-data:/app/data
+    networks:
+      - default
+      - industrial_net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/telemetry/current')\" || exit 1"]
@@ -21,3 +25,10 @@ services:
 
 volumes:
   twin-data:
+
+networks:
+  default:
+  industrial_net:
+    name: industrialtelemetryengine_default
+    external: true
+
