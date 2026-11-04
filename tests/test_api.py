@@ -56,6 +56,22 @@ async def test_alarms_endpoints(async_client):
     assert resp_404.status_code == 404
 
 
+async def test_reset_simulation_endpoint(async_client):
+    # Alter twin state
+    twin.tank_level_m = 9.9
+    twin.reactor_temp_c = 199.0
+
+    response = await async_client.post("/api/simulation/reset")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+
+    # Verify state reset
+    assert twin.tank_level_m == 5.0
+    assert twin.reactor_temp_c == 85.0
+    assert twin.cooling_valve_pct == 45.0
+
+
 def test_websocket_telemetry_stream():
     # TestClient synchronous context for WebSocket
     client = TestClient(app)

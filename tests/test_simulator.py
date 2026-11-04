@@ -95,3 +95,38 @@ def test_alarm_acknowledgment():
 
     # Unknown alarm id returns False
     assert twin.acknowledge_alarm("non-existent-id") is False
+
+
+def test_simulator_reset():
+    twin = PlantDigitalTwin()
+    twin.tank_level_m = 9.8
+    twin.reactor_temp_c = 240.0
+    twin.cooling_valve_pct = 100.0
+    twin.feed_valve_open = False
+    twin.interlock_tripped = True
+    twin.status = PlantStatus.CRITICAL_SHUTDOWN
+
+    twin.reset()
+
+    assert twin.tank_level_m == 5.0
+    assert twin.reactor_temp_c == 85.0
+    assert twin.cooling_valve_pct == 45.0
+    assert twin.feed_valve_open is True
+    assert twin.interlock_tripped is False
+    assert twin.status == PlantStatus.NORMAL
+    assert len(twin.active_alarms) == 0
+
+
+def test_thermal_runaway_can_cool_down():
+    """Verify that even at max temperature (250°C), 100% cooling duty overpowers heat generation."""
+    twin = PlantDigitalTwin()
+    twin.temp_noise_std = 0.0
+    twin.reactor_temp_c = 250.0
+    twin.cooling_valve_pct = 100.0
+    twin.feed_valve_open = False  # typical after trip
+
+    initial_temp = twin.reactor_temp_c
+    frame = twin.step(dt_seconds=1.0)
+
+    # Temperature must decrease, proving no unphysical kinetic trapping
+    assert frame.reactor_temp_c < initial_temp

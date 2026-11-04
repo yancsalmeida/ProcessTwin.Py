@@ -261,6 +261,9 @@
 
       <div class="control-group">
         <label>Cooling Valve (FCV-102) <span class="val" id="lblCoolingVal">45.0%</span></label>
+        <div style="font-size:0.72rem; color:var(--text-secondary); margin-bottom:5px;">
+          (Higher % = Cool down; Lower % = Heat up)
+        </div>
         <input type="range" id="inpCooling" min="0" max="100" step="1" value="45" />
       </div>
 
@@ -277,6 +280,11 @@
 
       <button class="btn-action" id="btnToggleValve">Emergency Feed Valve: OPEN</button>
       <button class="btn-action btn-trip" id="btnTripEmergency" style="margin-top:0.75rem;">Manual E-Stop (Trip Interlock)</button>
+      <button class="btn-action" id="btnResetPlant" style="background:linear-gradient(135deg, #0284c7, #0ea5e9); border-color:#38bdf8; color:#fff; margin-top:0.75rem; font-weight:700;">🔄 Reset Plant State (85°C)</button>
+      
+      <div id="sisTripAlert" style="display:none; background:rgba(244,63,94,0.15); border:1px solid #f43f5e; color:#fb7185; border-radius:6px; padding:0.6rem; font-size:0.75rem; font-family:var(--font-mono); margin-top:0.75rem;">
+        🚨 <b>SIS INTERLOCK TRIPPED</b><br/>Cooling valve flooded to 100%. Click "Reset Plant State" to restore normal control.
+      </div>
     </aside>
 
     <!-- Right Workspace -->
@@ -395,6 +403,8 @@
       lblDischFlowVal: document.getElementById('lblDischFlowVal'),
       btnToggleValve: document.getElementById('btnToggleValve'),
       btnTripEmergency: document.getElementById('btnTripEmergency'),
+      btnResetPlant: document.getElementById('btnResetPlant'),
+      sisTripAlert: document.getElementById('sisTripAlert'),
       svgFeedText: document.getElementById('svgFeedText'),
       svgDischargeText: document.getElementById('svgDischargeText'),
       svgLiquidLevel: document.getElementById('svgLiquidLevel'),
@@ -458,6 +468,21 @@
       sendActuatorCommand({ feed_valve_open: false, cooling_valve_pct: 100 });
     });
 
+    els.btnResetPlant.addEventListener('click', async () => {
+      try {
+        await fetch('/api/simulation/reset', { method: 'POST' });
+        els.inpCooling.value = 45;
+        els.lblCoolingVal.textContent = '45.0%';
+        els.inpFeedFlow.value = 24;
+        els.lblFeedFlowVal.textContent = '24.0 m³/h';
+        els.inpDischFlow.value = 24;
+        els.lblDischFlowVal.textContent = '24.0 m³/h';
+        if (els.sisTripAlert) els.sisTripAlert.style.display = 'none';
+      } catch (e) {
+        console.warn('Failed to reset simulation:', e);
+      }
+    });
+
     function updatePlantUI(frame) {
       feedValveOpen = frame.feed_valve_open;
       els.kpiLevel.textContent = `${frame.tank_level_m.toFixed(2)} m`;
@@ -488,7 +513,10 @@
         els.btnToggleValve.classList.remove('pulse-alert');
       }
 
-      // Sync cooling slider if automated SIS interlock tripped
+      // Sync cooling slider & alert if automated SIS interlock tripped
+      if (els.sisTripAlert) {
+        els.sisTripAlert.style.display = frame.interlock_tripped ? 'block' : 'none';
+      }
       if (frame.interlock_tripped) {
         els.inpCooling.value = 100;
         els.lblCoolingVal.textContent = '100.0%';

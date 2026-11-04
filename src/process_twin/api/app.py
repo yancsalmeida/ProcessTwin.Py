@@ -109,6 +109,13 @@ async def override_actuators(command: ActuatorCommand) -> dict:
     return {"status": "success", "command_applied": command.model_dump(exclude_none=True)}
 
 
+@app.post("/api/simulation/reset")
+async def reset_simulation() -> dict:
+    """Resets the digital twin to initial steady-state conditions (85°C, 5.0m level, 45% cooling)."""
+    twin.reset()
+    return {"status": "success", "message": "Simulation reset to initial steady-state conditions."}
+
+
 @app.get("/api/alarms")
 async def get_alarms() -> list:
     """Returns list of currently active alarms and safety trips."""

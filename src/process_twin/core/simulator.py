@@ -51,6 +51,18 @@ class PlantDigitalTwin:
         self.temp_noise_std = 0.15    # ± 0.15 °C noise
         self.press_noise_std = 0.015  # ± 0.015 bar noise
 
+    def reset(self) -> None:
+        """Resets the plant simulator back to its initial normal steady-state conditions."""
+        self.tank_level_m = 5.0
+        self.feed_valve_open = True
+        self.feed_flow_m3_h = 24.0
+        self.discharge_flow_m3_h = 24.0
+        self.reactor_temp_c = 85.0
+        self.cooling_valve_pct = 45.0
+        self.interlock_tripped = False
+        self.status = PlantStatus.NORMAL
+        self.active_alarms.clear()
+
     def apply_actuator_command(self, cmd: ActuatorCommand) -> None:
         """Applies manual operator overrides from SCADA/HMI interface."""
         if cmd.time_scale is not None:
@@ -89,11 +101,17 @@ class PlantDigitalTwin:
         tank_volume = self.tank_level_m * self.tank_area_m2
 
         # CSTR energy balance:
-        # Rate of temperature rise ~ feed sensible heat + non-linear Arrhenius heat gen - cooling removal
+        # Non-linear Arrhenius kinetics with conversion asymptotic bounds (Michaelis-Menten / CSTR X = Da / (1 + Da))
+        # This prevents unphysical infinite reaction rate traps during thermal runaway excursions.
         # Calibrated around nominal operating point T = 85 °C (358.15 K)
-        arrhenius_factor = math.exp(-4200.0 * (1.0 / (self.reactor_temp_c + 273.15) - 1.0 / 358.15))
-        heat_generation = 0.1503 * arrhenius_factor  # °C/s heat generation
-        cooling_duty = (self.cooling_valve_pct / 100.0) * 0.004 * (self.reactor_temp_c - self.coolant_temp_c)
+        arrhenius_k = math.exp(-4200.0 * (1.0 / (self.reactor_temp_c + 273.15) - 1.0 / 358.15))
+        conversion_factor = (2.0 * arrhenius_k) / (1.0 + arrhenius_k)
+        # Reactant feed entering the CSTR is supplied by buffer tank discharge
+        reactor_feed_active = self.feed_valve_open and self.tank_level_m > 0.05
+        feed_avail = (self.discharge_flow_m3_h / 24.0) if reactor_feed_active else 0.15
+        heat_generation = 0.26733 * conversion_factor * max(0.1, min(1.5, feed_avail))
+
+        cooling_duty = (self.cooling_valve_pct / 100.0) * 0.008 * (self.reactor_temp_c - self.coolant_temp_c)
         feed_cooling = (self.discharge_flow_m3_h / (self.reactor_volume_m3 * 3600.0)) * (25.0 - self.reactor_temp_c)
 
         dT_dt = heat_generation + feed_cooling - cooling_duty
