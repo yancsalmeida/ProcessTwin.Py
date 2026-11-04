@@ -102,7 +102,7 @@ flowchart TD
 
 ---
 
-## 🌐 Enterprise .NET 8 Telemetry Bridge (.NET 8 + PostgreSQL 16)
+## Enterprise .NET 8 Telemetry Bridge (.NET 8 + PostgreSQL 16)
 
 `ProcessTwin.Py` features a built-in asynchronous client bridge ([`telemetry_bridge.py`](src/process_twin/core/telemetry_bridge.py)) that connects this physical plant simulator with the enterprise-grade [**`IndustrialTelemetry.Engine`**](https://github.com/yancsalmeida/IndustrialTelemetry.Engine) microservice:
 
@@ -298,15 +298,8 @@ tests/test_storage.py::test_insert_and_retrieve_alarms PASSED
 
 ---
 
-## About the Author
+## Author
 
-Developed by **Yan Almeida**, Chemical Engineer (BSc from Budapest University of Technology and Economics / BME, Technical Diploma from IFRJ) currently based in Porto, Portugal, transitioning into **Software Engineering / Backend Systems**.
-
-This project demonstrates proficiency in:
-- Modern Python (3.11+, typed async/await, Pydantic v2).
-- Real-time communications (WebSockets at 5 Hz, concurrent client broadcasting).
-- Distributed systems integration (continuous HTTP streaming, batch lifecycle management, automated safety interlock propagation to .NET 8).
-- High-integrity backend design (Safety Instrumented Systems, automated interlocks, non-blocking asynchronous databases).
-- Applied computational engineering (discrete numerical balances, differential equations, dynamic state estimation).
-
-Connect on [LinkedIn](https://www.linkedin.com/in/yancsa/) or explore more projects on [GitHub](https://github.com/yancsalmeida).
+**Yan Almeida**
+- LinkedIn: [linkedin.com/in/yancsa](https://www.linkedin.com/in/yancsa/)
+- GitHub: [github.com/yancsalmeida](https://github.com/yancsalmeida)
