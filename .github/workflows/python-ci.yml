@@ -28,5 +28,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
 
+      - name: Build ReactorCore.C shared library for FFI tests
+        run: |
+          git clone --depth 1 https://github.com/yancsalmeida/ReactorCore.C.git /home/runner/work/ReactorCore.C || git clone --depth 1 https://github.com/yancsalmeida/ReactorCore.C.git ../ReactorCore.C
+          if [ -d "../ReactorCore.C" ]; then make -C ../ReactorCore.C lib; fi
+          if [ -d "/home/runner/work/ReactorCore.C" ]; then make -C /home/runner/work/ReactorCore.C lib; fi
+
       - name: Run test suite with pytest
         run: uv run pytest -v

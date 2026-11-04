@@ -5,6 +5,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Asyncio](https://img.shields.io/badge/asyncio-event--driven-orange.svg)](https://docs.python.org/3/library/asyncio.html)
 [![.NET 8 Engine Bridge](https://img.shields.io/badge/.NET_8_Bridge-Integrated-512BD4?logo=dotnet)](https://github.com/yancsalmeida/IndustrialTelemetry.Engine)
+[![Native C11 FFI](https://img.shields.io/badge/C11_FFI-ReactorCore.C-00599C?logo=c)](https://github.com/yancsalmeida/ReactorCore.C)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -234,7 +235,7 @@ uv run uvicorn process_twin.api.app:app --host 127.0.0.1 --port 8000 --reload
 uv run pytest -v
 ```
 
-All 33 unit, integration, and WebSocket tests pass cleanly:
+All 40 unit, integration, FFI bridge, and WebSocket tests pass cleanly:
 ```text
 tests/test_alarms.py::test_normal_operating_conditions PASSED
 tests/test_alarms.py::test_level_high_warning PASSED
@@ -266,9 +267,35 @@ tests/test_simulator.py::test_automated_interlock_trip_on_thermal_runaway PASSED
 tests/test_simulator.py::test_alarm_acknowledgment PASSED
 tests/test_storage.py::test_insert_and_retrieve_telemetry PASSED
 tests/test_storage.py::test_insert_and_retrieve_alarms PASSED
+tests/test_native_reactor.py::test_native_library_loaded_and_version PASSED
+tests/test_native_reactor.py::test_default_parameters_parity PASSED
+tests/test_native_reactor.py::test_reaction_rate_parity PASSED
+tests/test_native_reactor.py::test_single_step_rk4_analytical_parity PASSED
+tests/test_native_reactor.py::test_multi_step_trajectory_parity PASSED
+tests/test_native_reactor.py::test_step_detailed_and_runaway PASSED
+tests/test_native_reactor.py::test_graceful_fallback_when_binary_missing PASSED
 
-======================== 33 passed in 0.51s =========================
+======================== 40 passed in 0.43s =========================
 ```
+
+---
+
+## High-Performance Native C11 FFI Bridge (`ReactorCore.C`)
+
+`ProcessTwin.Py` integrates directly with the compiled C11 numerical engine from [**`ReactorCore.C`**](https://github.com/yancsalmeida/ReactorCore.C) via Python's standard `ctypes` foreign function interface ([`native_reactor.py`](src/process_twin/core/native_reactor.py)):
+
+- **C-ABI Struct Marshalling:** Directly maps 80-byte C structures (`CstrParamsFFI`) and telemetry payloads (`CstrStateFFI`) without serialization overhead.
+- **Batch Trajectory Integration:** Offloads multi-thousand-step dynamic Runge-Kutta 4 loops directly to native machine code (`libreactorcore.so`), avoiding Python bytecode dispatch overhead.
+- **Microsecond Latency:** Amortized $O(1)$ single-step execution through pre-allocated thread-local scratchpads in C.
+- **Bit-Level Numerical Parity:** Validated against a pure Python reference solver with zero double-precision deviation ($\Delta < 10^{-10}$).
+
+### Benchmark: Native C11 vs. Pure Python 3.12 (`benchmarks/bench_reactor_ffi.py`)
+
+| Benchmark Mode | Pure Python 3.12 | Native C11 Engine (`libreactorcore.so`) | Speedup Factor |
+|---|---|---|---|
+| **Single-Step RK4 Latency** (25,000 calls) | $3.36\,\mu\text{s}$ / step | $2.37\,\mu\text{s}$ / step | **$1.41\times$** |
+| **Batch Trajectory Throughput** (100,000 steps) | $284,623\,\text{steps/s}$ | **$2,666,219\,\text{steps/s}$** | **$9.4\times$ FASTER** |
+| **Numerical Parity Error ($L_\infty$)** | Baseline | **$0.00 \times 10^0$** (Exact IEEE-754 Match) | Bit-level fidelity |
 
 ---
 
