@@ -38,6 +38,9 @@ class PlantDigitalTwin:
         self.reactor_volume_m3 = 12.0
         self.coolant_temp_c = 20.0
 
+        # Simulation speed factor (default 5.0x for responsive interactive SCADA feedback)
+        self.time_scale = 5.0
+
         # Alarms & events
         self.active_alarms: List[AlarmEvent] = []
         self.interlock_tripped = False
@@ -50,13 +53,16 @@ class PlantDigitalTwin:
 
     def apply_actuator_command(self, cmd: ActuatorCommand) -> None:
         """Applies manual operator overrides from SCADA/HMI interface."""
+        if cmd.time_scale is not None:
+            self.time_scale = max(1.0, min(20.0, cmd.time_scale))
+
         if cmd.cooling_valve_pct is not None:
             self.cooling_valve_pct = max(0.0, min(100.0, cmd.cooling_valve_pct))
 
         if cmd.feed_valve_open is not None:
-            # If interlock was tripped, operator can reset it if conditions are safe
             self.feed_valve_open = cmd.feed_valve_open
-            if cmd.feed_valve_open and self.status == PlantStatus.NORMAL:
+            # If interlock was tripped, operator can reset it when conditions are not critical
+            if cmd.feed_valve_open and self.status != PlantStatus.CRITICAL_SHUTDOWN:
                 self.interlock_tripped = False
 
         if cmd.target_feed_flow_m3_h is not None:
@@ -70,7 +76,8 @@ class PlantDigitalTwin:
         Advances the physical plant simulation by dt_seconds using Euler integration.
         Returns the instantaneous noisy telemetry frame.
         """
-        dt_hours = dt_seconds / 3600.0
+        dt_eff = dt_seconds * self.time_scale
+        dt_hours = dt_eff / 3600.0
 
         # Effective inlet flow depends on emergency feed valve state
         actual_feed_flow = self.feed_flow_m3_h if self.feed_valve_open else 0.0
@@ -85,12 +92,12 @@ class PlantDigitalTwin:
         # Rate of temperature rise ~ feed sensible heat + non-linear Arrhenius heat gen - cooling removal
         # Calibrated around nominal operating point T = 85 °C (358.15 K)
         arrhenius_factor = math.exp(-4200.0 * (1.0 / (self.reactor_temp_c + 273.15) - 1.0 / 358.15))
-        heat_generation = 0.06843 * arrhenius_factor  # °C/s heat generation
-        cooling_duty = (self.cooling_valve_pct / 100.0) * 0.0012 * (self.reactor_temp_c - self.coolant_temp_c)
+        heat_generation = 0.1503 * arrhenius_factor  # °C/s heat generation
+        cooling_duty = (self.cooling_valve_pct / 100.0) * 0.004 * (self.reactor_temp_c - self.coolant_temp_c)
         feed_cooling = (self.discharge_flow_m3_h / (self.reactor_volume_m3 * 3600.0)) * (25.0 - self.reactor_temp_c)
 
         dT_dt = heat_generation + feed_cooling - cooling_duty
-        self.reactor_temp_c += dT_dt * dt_seconds
+        self.reactor_temp_c += dT_dt * dt_eff
         self.reactor_temp_c = max(15.0, min(250.0, self.reactor_temp_c))
 
         # Vapor space pressure Antoine approximation (blanket + solvent vapor in bar)
@@ -114,6 +121,7 @@ class PlantDigitalTwin:
             feed_valve_open=self.feed_valve_open,
             interlock_tripped=self.interlock_tripped,
             status=self.status,
+            time_scale=self.time_scale,
         )
 
         # Safety Interlock & Alarm Evaluation (SIS)

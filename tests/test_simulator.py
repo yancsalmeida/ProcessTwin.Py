@@ -15,6 +15,7 @@ def test_simulator_initial_state():
 
 def test_mass_balance_accumulation():
     twin = PlantDigitalTwin()
+    twin.time_scale = 1.0
     # Suppress noise for deterministic verification
     twin.level_noise_std = 0.0
 
@@ -34,6 +35,7 @@ def test_mass_balance_accumulation():
 
 def test_mass_balance_depletion():
     twin = PlantDigitalTwin()
+    twin.time_scale = 1.0
     twin.level_noise_std = 0.0
 
     # Feed: 0 m3/h, Discharge: 30 m3/h -> Net: -30 m3/h

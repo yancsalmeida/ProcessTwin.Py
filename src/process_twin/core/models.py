@@ -29,6 +29,7 @@ class PlantTelemetry(BaseModel):
     feed_valve_open: bool = Field(..., description="Automated emergency feed shutoff valve status")
     interlock_tripped: bool = Field(default=False, description="Whether safety interlock tripped automated shutdown")
     status: PlantStatus = Field(default=PlantStatus.NORMAL)
+    time_scale: float = Field(default=5.0, ge=1.0, le=20.0, description="Simulation speed acceleration factor")
 
 
 class AlarmEvent(BaseModel):
@@ -48,3 +49,4 @@ class ActuatorCommand(BaseModel):
     feed_valve_open: Optional[bool] = None
     target_feed_flow_m3_h: Optional[float] = Field(None, ge=0.0, le=60.0)
     target_discharge_flow_m3_h: Optional[float] = Field(None, ge=0.0, le=60.0)
+    time_scale: Optional[float] = Field(None, ge=1.0, le=20.0)

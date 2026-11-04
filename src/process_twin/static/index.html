@@ -139,6 +139,30 @@
     }
     .btn-action:hover { border-color: var(--accent-blue); }
     .btn-trip { border-color: var(--accent-rose); color: #fb7185; }
+    .pulse-alert {
+      animation: pulseAlert 1s infinite alternate;
+      border-color: #f43f5e !important;
+      color: #fb7185 !important;
+    }
+    @keyframes pulseAlert {
+      from { box-shadow: 0 0 4px rgba(244, 63, 94, 0.4); }
+      to { box-shadow: 0 0 14px rgba(244, 63, 94, 0.95); }
+    }
+
+    .btn-speed {
+      background: transparent;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-speed:hover { color: #f8fafc; border-color: #38bdf8; }
+    .btn-speed.active { background: #38bdf8; color: #0f172a; border-color: #38bdf8; }
 
     /* Right workspace */
     .workspace { display: flex; flex-direction: column; gap: 1.25rem; }
@@ -217,6 +241,12 @@
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:1rem;">
+      <div style="display:flex; align-items:center; gap:0.35rem; background:#1e293b; padding:0.25rem 0.5rem; border-radius:6px; border:1px solid #334155;">
+        <span style="font-size:0.75rem; color:#94a3b8; font-family:var(--font-mono); font-weight:600; margin-right:0.2rem;">Speed:</span>
+        <button class="btn-speed" data-speed="1" onclick="setSpeed(1.0)">1x</button>
+        <button class="btn-speed active" data-speed="5" onclick="setSpeed(5.0)">5x</button>
+        <button class="btn-speed" data-speed="10" onclick="setSpeed(10.0)">10x</button>
+      </div>
       <span id="plantStatusPill" class="status-pill status-NORMAL">● NORMAL</span>
       <a href="/docs" style="color:var(--accent-blue); font-size:0.82rem; text-decoration:none; font-weight:600;">Swagger Docs &rarr;</a>
     </div>
@@ -236,12 +266,13 @@
 
       <div class="control-group">
         <label>Target Feed Flow <span class="val" id="lblFeedFlowVal">24.0 m³/h</span></label>
-        <input type="range" id="inpFeedFlow" min="0" max="45" step="1" value="24" />
+        <input type="range" id="inpFeedFlow" min="0" max="60" step="1" value="24" />
+        <div id="feedValveAlert" style="display:none; color:#fb7185; font-size:0.75rem; font-family:var(--font-mono); font-weight:600; margin-top:4px;">⚠️ Feed valve is SHUT (0 m³/h inflow)</div>
       </div>
 
       <div class="control-group">
         <label>Target Discharge Flow <span class="val" id="lblDischFlowVal">24.0 m³/h</span></label>
-        <input type="range" id="inpDischFlow" min="0" max="45" step="1" value="24" />
+        <input type="range" id="inpDischFlow" min="0" max="60" step="1" value="24" />
       </div>
 
       <button class="btn-action" id="btnToggleValve">Emergency Feed Valve: OPEN</button>
@@ -347,7 +378,7 @@
 
   <script>
     const history = [];
-    const maxPoints = 80;
+    const maxPoints = 120;
 
     const els = {
       statusPill: document.getElementById('plantStatusPill'),
@@ -378,30 +409,42 @@
       alarmCountBadge: document.getElementById('alarmCountBadge'),
       alarmListContainer: document.getElementById('alarmListContainer'),
       chartCanvas: document.getElementById('chartCanvas'),
+      feedValveAlert: document.getElementById('feedValveAlert'),
     };
 
     let feedValveOpen = true;
 
     async function sendActuatorCommand(payload) {
-      await fetch('/api/actuators', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      try {
+        await fetch('/api/actuators', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } catch (e) {
+        console.warn('Failed to send actuator command:', e);
+      }
     }
 
+    window.setSpeed = async function(factor) {
+      document.querySelectorAll('.btn-speed').forEach(b => {
+        b.classList.toggle('active', parseFloat(b.dataset.speed) === factor);
+      });
+      await sendActuatorCommand({ time_scale: factor });
+    };
+
     els.inpCooling.addEventListener('input', e => {
-      els.lblCoolingVal.textContent = `${e.target.value}%`;
+      els.lblCoolingVal.textContent = `${parseFloat(e.target.value).toFixed(1)}%`;
       sendActuatorCommand({ cooling_valve_pct: parseFloat(e.target.value) });
     });
 
     els.inpFeedFlow.addEventListener('input', e => {
-      els.lblFeedFlowVal.textContent = `${e.target.value} m³/h`;
+      els.lblFeedFlowVal.textContent = `${parseFloat(e.target.value).toFixed(1)} m³/h`;
       sendActuatorCommand({ target_feed_flow_m3_h: parseFloat(e.target.value) });
     });
 
     els.inpDischFlow.addEventListener('input', e => {
-      els.lblDischFlowVal.textContent = `${e.target.value} m³/h`;
+      els.lblDischFlowVal.textContent = `${parseFloat(e.target.value).toFixed(1)} m³/h`;
       sendActuatorCommand({ target_discharge_flow_m3_h: parseFloat(e.target.value) });
     });
 
@@ -428,13 +471,35 @@
       els.statusPill.className = `status-pill status-${frame.status}`;
       els.statusPill.textContent = `● ${frame.status}`;
 
-      // Valve SVG
+      // Feed Valve SVG & Alert
       const valveColor = frame.feed_valve_open ? '#10b981' : '#f43f5e';
       els.svgValveLeft.setAttribute('fill', valveColor);
       els.svgValveRight.setAttribute('fill', valveColor);
       els.svgValveTag.textContent = frame.feed_valve_open ? 'XV-101 [OPEN]' : 'XV-101 [SHUT]';
       els.btnToggleValve.textContent = frame.feed_valve_open ? 'Emergency Feed Valve: OPEN' : 'Reset Feed Valve: [SHUT]';
       els.btnToggleValve.style.borderColor = frame.feed_valve_open ? 'var(--border)' : 'var(--accent-rose)';
+
+      if (els.feedValveAlert) {
+        els.feedValveAlert.style.display = frame.feed_valve_open ? 'none' : 'block';
+      }
+      if (!frame.feed_valve_open) {
+        els.btnToggleValve.classList.add('pulse-alert');
+      } else {
+        els.btnToggleValve.classList.remove('pulse-alert');
+      }
+
+      // Sync cooling slider if automated SIS interlock tripped
+      if (frame.interlock_tripped) {
+        els.inpCooling.value = 100;
+        els.lblCoolingVal.textContent = '100.0%';
+      }
+
+      // Sync active speed button
+      if (frame.time_scale) {
+        document.querySelectorAll('.btn-speed').forEach(b => {
+          b.classList.toggle('active', Math.abs(parseFloat(b.dataset.speed) - frame.time_scale) < 0.1);
+        });
+      }
 
       // SVG Tank Liquid Level (tank rect top: 30, height: 150)
       const maxH = 10.0;
@@ -478,7 +543,7 @@
 
       if (history.length < 2) return;
 
-      const pad = { top: 20, bottom: 25, left: 45, right: 45 };
+      const pad = { top: 22, bottom: 25, left: 45, right: 65 };
       const plotW = w - pad.left - pad.right;
       const plotH = h - pad.top - pad.bottom;
 
@@ -493,6 +558,29 @@
         ctx.stroke();
       }
 
+      // Dashed safety thresholds
+      ctx.setLineDash([4, 4]);
+      // Level Trip (9.5m)
+      const yLTrip = pad.top + (1 - (9.5 / 10.0)) * plotH;
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.45)';
+      ctx.beginPath();
+      ctx.moveTo(pad.left, yLTrip);
+      ctx.lineTo(pad.left + plotW, yLTrip);
+      ctx.stroke();
+      ctx.font = '9px monospace';
+      ctx.fillStyle = '#fb7185';
+      ctx.fillText('9.5m TRIP', pad.left + 5, yLTrip - 3);
+
+      // Temp Trip (135°C -> (135-20)/140 = 0.8214)
+      const yTTrip = pad.top + (1 - (115.0 / 140.0)) * plotH;
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.45)';
+      ctx.beginPath();
+      ctx.moveTo(pad.left, yTTrip);
+      ctx.lineTo(pad.left + plotW, yTTrip);
+      ctx.stroke();
+      ctx.fillText('135°C TRIP', pad.left + plotW - 65, yTTrip - 3);
+      ctx.setLineDash([]);
+
       // Left axis: Level 0 to 10 m
       ctx.font = '10px monospace';
       ctx.fillStyle = '#38bdf8';
@@ -501,12 +589,14 @@
 
       // Right axis: Temp 20 to 160 °C
       ctx.fillStyle = '#f43f5e';
-      ctx.fillText('160°C', w - 40, pad.top + 8);
-      ctx.fillText('20°C', w - 40, pad.top + plotH);
+      ctx.fillText('160°C', w - 45, pad.top + 8);
+      ctx.fillText('20°C', w - 45, pad.top + plotH);
+
+      const n = history.length;
 
       // Draw Level Line (Blue)
       ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       history.forEach((f, i) => {
         const x = pad.left + (i / (maxPoints - 1)) * plotW;
@@ -517,9 +607,20 @@
       });
       ctx.stroke();
 
+      // Glowing dot & label on last Level point
+      const lastX = pad.left + ((n - 1) / (maxPoints - 1)) * plotW;
+      const lastLNorm = Math.max(0, Math.min(10, history[n - 1].tank_level_m)) / 10.0;
+      const lastLY = pad.top + (1 - lastLNorm) * plotH;
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(lastX, lastLY, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(`${history[n - 1].tank_level_m.toFixed(2)}m`, lastX + 6, lastLY - 2);
+
       // Draw Temp Line (Rose)
       ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       history.forEach((f, i) => {
         const x = pad.left + (i / (maxPoints - 1)) * plotW;
@@ -529,6 +630,16 @@
         else ctx.lineTo(x, y);
       });
       ctx.stroke();
+
+      // Glowing dot & label on last Temp point
+      const lastTNorm = Math.max(0, Math.min(140, history[n - 1].reactor_temp_c - 20)) / 140.0;
+      const lastTY = pad.top + (1 - lastTNorm) * plotH;
+      ctx.fillStyle = '#f43f5e';
+      ctx.beginPath();
+      ctx.arc(lastX, lastTY, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(`${history[n - 1].reactor_temp_c.toFixed(1)}°C`, lastX + 6, lastTY + 10);
     }
 
     async function pollAlarms() {
