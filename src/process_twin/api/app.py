@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Set
@@ -16,7 +17,8 @@ from process_twin.core.simulator import PlantDigitalTwin
 from process_twin.db.storage import TelemetryDatabase
 
 # Global engine instances
-db = TelemetryDatabase("processtwin.db")
+DB_PATH = os.getenv("PROCESS_TWIN_DB", "processtwin.db")
+db = TelemetryDatabase(DB_PATH)
 twin = PlantDigitalTwin()
 active_websockets: Set[WebSocket] = set()
 background_task: asyncio.Task = None

@@ -1,0 +1,23 @@
+services:
+  process-twin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: process-twin
+    ports:
+      - "8000:8000"
+    environment:
+      - PROCESS_TWIN_DB=/app/data/processtwin.db
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - twin-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/telemetry/current')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  twin-data:

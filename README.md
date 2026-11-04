@@ -4,6 +4,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Asyncio](https://img.shields.io/badge/asyncio-event--driven-orange.svg)](https://docs.python.org/3/library/asyncio.html)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An asynchronous, event-driven industrial Digital Twin simulating a coupled chemical buffer tank and continuous exothermic stirred-tank reactor (CSTR). Engineered with **FastAPI**, **Asyncio**, **Pydantic v2**, and **aiosqlite**, `ProcessTwin.Py` streams real-time sensor telemetry at 5 Hz over WebSockets, enforces automated Safety Instrumented System (SIS) interlocks, logs time-series data asynchronously, and serves an interactive dark-mode SCADA dashboard.
@@ -129,6 +130,8 @@ ProcessTwin.Py/
 │   ├── test_simulator.py           # Mass/energy balances & automated shutdown tests
 │   ├── test_storage.py             # Async SQLite CRUD & index tests
 │   └── test_api.py                 # REST endpoints and WebSocket integration tests
+├── Dockerfile                      # Production slim image with uv packaging
+├── docker-compose.yml              # Single-command container orchestration
 ├── pyproject.toml                  # PEP 621 packaging and pytest configuration
 └── README.md
 ```
@@ -137,31 +140,32 @@ ProcessTwin.Py/
 
 ## Quickstart
 
-### Prerequisites
+### Option 1: Run with Docker Compose (Recommended)
 
-- Python `>= 3.10`
-- [`uv`](https://github.com/astral-sh/uv) (recommended) or standard `pip`
-
-### 1. Installation
-
-Clone the repository and install dependencies:
+Requires only [Docker](https://docs.docker.com/get-docker/):
 
 ```bash
+docker compose up --build
+```
+
+- **Interactive SCADA Dashboard:** [http://localhost:8000](http://localhost:8000)
+- **OpenAPI / Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
+
+### Option 2: Run with Native Python / `uv`
+
+Prerequisites: Python `>= 3.10` and [`uv`](https://github.com/astral-sh/uv) (or standard `pip`):
+
+```bash
+# Clone repository
 git clone https://github.com/yancsalmeida/ProcessTwin.Py.git
 cd ProcessTwin.Py
 
-# Using uv (instant virtual environment setup)
+# Install dependencies in virtual environment
 uv sync --all-extras --dev
-```
 
-### 2. Launch the SCADA Server
-
-```bash
+# Run server with live reload
 uv run uvicorn process_twin.api.app:app --host 127.0.0.1 --port 8000 --reload
 ```
-
-- **SCADA Operator Dashboard:** Open [http://localhost:8000](http://localhost:8000)
-- **Interactive OpenAPI (Swagger UI):** Open [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ### 3. Run the Test Suite
 
