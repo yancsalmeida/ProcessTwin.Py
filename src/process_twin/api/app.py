@@ -15,6 +15,7 @@ from process_twin.core.models import (
 )
 from process_twin.core.simulator import PlantDigitalTwin
 from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge, BridgeStatus
+from process_twin.core.chemflow_bridge import ChemFlowThermodynamicsBridge, ChemFlowStatus
 from process_twin.db.storage import TelemetryDatabase
 
 # Global engine instances
@@ -22,6 +23,7 @@ DB_PATH = os.getenv("PROCESS_TWIN_DB", "processtwin.db")
 db = TelemetryDatabase(DB_PATH)
 twin = PlantDigitalTwin()
 bridge = IndustrialTelemetryBridge()
+chemflow_bridge = ChemFlowThermodynamicsBridge()
 active_websockets: Set[WebSocket] = set()
 background_task: asyncio.Task = None
 
@@ -47,6 +49,14 @@ async def telemetry_background_loop() -> None:
 
             # Persist to local database at 1 Hz (every 5 steps) or immediately upon alarm/interlock
             if step_count % 5 == 0 or frame.interlock_tripped:
+                # Query ChemFlow.NET real-fluid thermodynamics
+                if chemflow_bridge.enabled:
+                    flash_data = await chemflow_bridge.calculate_flash(
+                        temperature_c=twin.reactor_temp_c,
+                        pressure_bar=frame.reactor_pressure_bar
+                    )
+                    twin.update_thermodynamics(flash_data)
+
                 await db.insert_telemetry(frame)
                 for alarm in twin.active_alarms:
                     await db.insert_alarm(alarm)
@@ -70,8 +80,9 @@ async def telemetry_background_loop() -> None:
 async def lifespan(app: FastAPI):
     global background_task
     await db.init_db()
-    # Check .NET IndustrialTelemetry.Engine connectivity on startup
+    # Check .NET IndustrialTelemetry.Engine & ChemFlow.NET connectivity on startup
     await bridge.check_health()
+    await chemflow_bridge.check_health()
     background_task = asyncio.create_task(telemetry_background_loop())
     yield
     if background_task:
@@ -81,6 +92,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await bridge.close()
+    await chemflow_bridge.close()
 
 
 app = FastAPI(
@@ -190,6 +202,27 @@ async def get_bridge_batch_summary(batch_id: Optional[str] = None) -> dict:
     if not summary:
         raise HTTPException(status_code=404, detail="Batch summary not available.")
     return summary
+
+
+@app.get("/api/thermo/current")
+async def get_current_thermodynamics() -> dict:
+    """Returns the current real-fluid thermodynamic state calculated via ChemFlow.NET Peng-Robinson EOS."""
+    return {
+        "status": chemflow_bridge.get_status().model_dump(),
+        "latest_flash": {
+            "vapor_fraction_beta": twin.latest_beta,
+            "thermo_phase": twin.latest_phase,
+            "thermo_model": twin.latest_thermo_model,
+            "molar_enthalpy_j_mol": twin.latest_molar_enthalpy,
+        }
+    }
+
+
+@app.get("/api/thermo/status", response_model=ChemFlowStatus)
+async def get_thermo_status() -> ChemFlowStatus:
+    """Returns the connectivity and health status of the ChemFlow.NET thermodynamics bridge."""
+    await chemflow_bridge.check_health()
+    return chemflow_bridge.get_status()
 
 
 @app.websocket("/ws/telemetry")

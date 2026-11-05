@@ -30,6 +30,10 @@ class PlantTelemetry(BaseModel):
     interlock_tripped: bool = Field(default=False, description="Whether safety interlock tripped automated shutdown")
     status: PlantStatus = Field(default=PlantStatus.NORMAL)
     time_scale: float = Field(default=5.0, ge=1.0, le=20.0, description="Simulation speed acceleration factor")
+    vapor_fraction_beta: Optional[float] = Field(default=None, description="Rigorous VLE vapor fraction beta from ChemFlow.NET")
+    thermo_phase: Optional[str] = Field(default=None, description="Equilibrium phase state from ChemFlow.NET")
+    thermo_model: Optional[str] = Field(default=None, description="Thermodynamic model applied (e.g. Peng-Robinson EOS)")
+    molar_enthalpy_j_mol: Optional[float] = Field(default=None, description="Fluid molar enthalpy departure in J/mol")
 
 
 class AlarmEvent(BaseModel):

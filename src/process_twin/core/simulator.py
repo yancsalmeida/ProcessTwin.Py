@@ -51,6 +51,21 @@ class PlantDigitalTwin:
         self.temp_noise_std = 0.15    # ± 0.15 °C noise
         self.press_noise_std = 0.015  # ± 0.015 bar noise
 
+        # Real-fluid thermodynamics state from ChemFlow.NET
+        self.latest_beta: Optional[float] = None
+        self.latest_phase: Optional[str] = "SubcooledLiquid"
+        self.latest_thermo_model: Optional[str] = "Peng-Robinson EOS (1976)"
+        self.latest_molar_enthalpy: Optional[float] = None
+
+    def update_thermodynamics(self, flash_data: Optional[dict]) -> None:
+        """Updates real-fluid thermodynamic state resolved from ChemFlow.NET."""
+        if not flash_data:
+            return
+        self.latest_beta = flash_data.get("vaporFractionBeta")
+        self.latest_phase = flash_data.get("phase")
+        self.latest_thermo_model = flash_data.get("thermodynamicModel")
+        self.latest_molar_enthalpy = flash_data.get("molarEnthalpyJPerMol")
+
     def reset(self) -> None:
         """Resets the plant simulator back to its initial normal steady-state conditions."""
         self.tank_level_m = 5.0
@@ -140,6 +155,10 @@ class PlantDigitalTwin:
             interlock_tripped=self.interlock_tripped,
             status=self.status,
             time_scale=self.time_scale,
+            vapor_fraction_beta=self.latest_beta,
+            thermo_phase=self.latest_phase,
+            thermo_model=self.latest_thermo_model,
+            molar_enthalpy_j_mol=self.latest_molar_enthalpy,
         )
 
         # Safety Interlock & Alarm Evaluation (SIS)
