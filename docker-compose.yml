@@ -11,12 +11,12 @@ services:
       - PYTHONUNBUFFERED=1
       - TELEMETRY_ENGINE_URL=http://industrial-telemetry-api:5100
       - TELEMETRY_INGESTION_MODE=channel
+      - CHEMFLOW_ENGINE_URL=http://chemflow-api:5080
     volumes:
       - twin-data:/app/data
       - ../ReactorCore.C/libreactorcore.so:/usr/local/lib/libreactorcore.so:ro
     networks:
       - default
-      - industrial_net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/telemetry/current')\" || exit 1"]
@@ -30,6 +30,4 @@ volumes:
 
 networks:
   default:
-  industrial_net:
-    name: industrialtelemetryengine_default
-    external: true
+    name: chemical_software_portfolio_net
