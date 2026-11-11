@@ -34,6 +34,13 @@ class PlantTelemetry(BaseModel):
     thermo_phase: Optional[str] = Field(default=None, description="Equilibrium phase state from ChemFlow.NET")
     thermo_model: Optional[str] = Field(default=None, description="Thermodynamic model applied (e.g. Peng-Robinson EOS)")
     molar_enthalpy_j_mol: Optional[float] = Field(default=None, description="Fluid molar enthalpy departure in J/mol")
+    # Extended Kalman Filter (EKF) state estimation fields
+    estimated_ca_mol_l: Optional[float] = Field(default=None, description="Unmeasured reactant concentration Ca estimated via EKF")
+    estimated_temp_c: Optional[float] = Field(default=None, description="Filtered temperature state from EKF")
+    estimated_conversion_pct: Optional[float] = Field(default=None, description="Estimated conversion percentage X_A from EKF")
+    estimated_reaction_rate: Optional[float] = Field(default=None, description="Estimated instantaneous reaction rate from EKF")
+    ekf_temp_residual_c: Optional[float] = Field(default=None, description="EKF temperature innovation residual y - y_hat (°C)")
+    ekf_nis: Optional[float] = Field(default=None, description="Normalized Innovation Squared for sensor drift/anomaly detection")
 
 
 class AlarmEvent(BaseModel):

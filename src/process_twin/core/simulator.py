@@ -9,6 +9,7 @@ from process_twin.core.models import (
     PlantStatus,
 )
 from process_twin.core.alarms import evaluate_safety_alarms
+from process_twin.core.ekf import CstrExtendedKalmanFilter, EkfEstimate
 
 
 class PlantDigitalTwin:
@@ -57,6 +58,14 @@ class PlantDigitalTwin:
         self.latest_thermo_model: Optional[str] = "Peng-Robinson EOS (1976)"
         self.latest_molar_enthalpy: Optional[float] = None
 
+        # Extended Kalman Filter (EKF) for non-linear state & concentration estimation
+        self.ekf = CstrExtendedKalmanFilter(
+            initial_ca=0.5,
+            initial_temp_c=self.reactor_temp_c,
+            r_temp=self.temp_noise_std ** 2,
+        )
+        self.latest_ekf: Optional[EkfEstimate] = None
+
     def update_thermodynamics(self, flash_data: Optional[dict]) -> None:
         """Updates real-fluid thermodynamic state resolved from ChemFlow.NET."""
         if not flash_data:
@@ -77,6 +86,8 @@ class PlantDigitalTwin:
         self.interlock_tripped = False
         self.status = PlantStatus.NORMAL
         self.active_alarms.clear()
+        self.ekf.reset(ca=0.5, temp_c=85.0)
+        self.latest_ekf = None
 
     def apply_actuator_command(self, cmd: ActuatorCommand) -> None:
         """Applies manual operator overrides from SCADA/HMI interface."""
@@ -142,6 +153,15 @@ class PlantDigitalTwin:
         noisy_temp = max(15.0, self.reactor_temp_c + random.gauss(0, self.temp_noise_std))
         noisy_pressure = max(0.5, reactor_pressure + random.gauss(0, self.press_noise_std))
 
+        # Run Extended Kalman Filter (EKF) step for unmeasured state & concentration estimation
+        self.latest_ekf = self.ekf.step(
+            dt_seconds=dt_eff,
+            measured_temp_c=noisy_temp,
+            flow_m3_h=self.discharge_flow_m3_h,
+            cooling_valve_pct=self.cooling_valve_pct,
+            feed_active=reactor_feed_active,
+        )
+
         frame = PlantTelemetry(
             timestamp=datetime.now(timezone.utc),
             tank_level_m=round(noisy_level, 3),
@@ -159,6 +179,12 @@ class PlantDigitalTwin:
             thermo_phase=self.latest_phase,
             thermo_model=self.latest_thermo_model,
             molar_enthalpy_j_mol=self.latest_molar_enthalpy,
+            estimated_ca_mol_l=self.latest_ekf.ca_mol_per_l if self.latest_ekf else None,
+            estimated_temp_c=self.latest_ekf.temp_celsius if self.latest_ekf else None,
+            estimated_conversion_pct=self.latest_ekf.conversion_pct if self.latest_ekf else None,
+            estimated_reaction_rate=self.latest_ekf.reaction_rate if self.latest_ekf else None,
+            ekf_temp_residual_c=self.latest_ekf.temp_residual if self.latest_ekf else None,
+            ekf_nis=self.latest_ekf.nis if self.latest_ekf else None,
         )
 
         # Safety Interlock & Alarm Evaluation (SIS)

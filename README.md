@@ -22,6 +22,7 @@ An asynchronous, event-driven industrial Digital Twin simulating a coupled chemi
 - **Enterprise .NET 8 Telemetry Bridge:** Continuous 1 Hz asynchronous forwarder transmitting sensor snapshots to [**`IndustrialTelemetry.Engine`**](https://github.com/yancsalmeida/IndustrialTelemetry.Engine), managing batch lifecycles (`Scheduled` $\to$ `InProgress` $\to$ `Completed`/`Aborted`), automated batch negotiation, and propagating SIS emergency trip aborts into PostgreSQL 16.
 - **Rigorous Cubic EOS Integration:** Integrates with [**`ChemFlow.NET`**](https://github.com/yancsalmeida/ChemFlow.NET) via asynchronous HTTP client, evaluating non-ideal Peng-Robinson (1976) vapor-liquid equilibria (VLE), exact vapor fraction $\beta$, and molar enthalpy departures for reactor headspace dynamics with automated analytical local fallback.
 - **Physical & Thermodynamic Rigor:** Coupled mass and non-linear dynamic energy balances modeling buffer surge dynamics, Arrhenius reaction kinetics, cooling jacket heat exchange, and Antoine vapor pressure approximation.
+- **Extended Kalman Filter (EKF) State Estimation:** Reconstructs unmeasured internal reactant concentration $C_A(t)$, chemical reaction rate $r(t)$, and conversion percentage $X(t)$ in real-time from noisy thermocouple readings (`TT-101`) using analytical Jacobians and Joseph-stabilized covariance updates, complete with Normalized Innovation Squared (NIS) for sensor drift and anomaly detection.
 - **Transmitter Noise Emulation:** Injects Gaussian white noise ($\mathcal{N}(0, \sigma^2)$) on level, temperature, and pressure signals to emulate real-world 4–20 mA industrial transmitter sensor drift.
 - **Safety Instrumented Systems (SIS / IEC 61511):** Continuous automated evaluation of safety interlocks (HAZOP trip conditions). Automatically halts feed flow ($XV-101$) and floods cooling jackets upon critical level accumulation or thermal runaway.
 - **Non-Blocking Time-Series Persistence:** Asynchronous parameter-safe SQLite storage via `aiosqlite`, archiving plant snapshots and annunciated alarm audit logs with indexed timestamps.
@@ -65,6 +66,16 @@ Thermal runaways cause exponential boiling and vessel overpressure, triggering e
 | **LT-101** | Tank Level | $\ge 8.0\,\text{m}$ (Warning) | $\ge 9.5\,\text{m}$ $\implies$ **Emergency Feed Shutoff ($XV-101$ Closed)** |
 | **TT-102** | Reactor Temp | $\ge 115.0\,^\circ\text{C}$ (Warning) | $\ge 135.0\,^\circ\text{C}$ $\implies$ **Feed Shutoff + 100% Cooling Flood** |
 | **PT-103** | Reactor Pressure | $\ge 4.0\,\text{bar}$ (Warning) | $\ge 5.5\,\text{bar}$ $\implies$ **Critical Overpressure Annunciation** |
+
+### 5. Extended Kalman Filter (EKF) State Estimation
+Because reactant concentration $C_A$ cannot be measured directly online without delayed lab chromatography, an **Extended Kalman Filter** reconstructs the full state $x = [C_A, T]^T$ from noisy online temperature measurements $y = T_{\text{meas}}$:
+- **Continuous-Discrete Integration:** Predicts prior state $\hat{x}_{k|k-1}$ via 4th-order Runge-Kutta (RK4) integration of the coupled species and energy balances over step $\Delta t$.
+- **Analytical Jacobian Propagation:** Evaluates the dynamic transition matrix $\Phi \approx I + F \Delta t$ from analytical partial derivatives:
+  $$F_{11} = -\frac{F}{V} - k(T), \quad F_{12} = -C_A \frac{dk}{dT}, \quad F_{21} = \frac{-\Delta H}{\rho C_p} k(T), \quad F_{22} = \frac{-\Delta H}{\rho C_p} C_A \frac{dk}{dT} - \frac{F}{V} - \frac{UA}{\rho C_p V}$$
+- **Joseph-Stabilized Covariance Update:**
+  $$P_{k|k} = (I - K_k H) P_{k|k-1} (I - K_k H)^T + K_k R K_k^T$$
+  guaranteeing symmetry and positive definiteness across all operating regimes.
+- **Normalized Innovation Squared (NIS):** Monitors $\epsilon_k = \frac{(y_k - \hat{y}_k)^2}{S_k} \sim \chi^2(1)$ to flag transmitter sensor drift or fouling ($\text{NIS} > 6.63$, $p < 0.01$).
 
 ---
 
@@ -179,6 +190,7 @@ ProcessTwin.Py/
 │       │   ├── __init__.py
 │       │   ├── models.py           # Pydantic v2 schemas & domain enums
 │       │   ├── alarms.py           # Threshold rules & SIS interlock evaluator
+│       │   ├── ekf.py              # Extended Kalman Filter (EKF) state & concentration estimator
 │       │   ├── simulator.py        # PlantDigitalTwin Euler integrator & state machine
 │       │   └── telemetry_bridge.py # Asynchronous .NET 8 IndustrialTelemetry client
 │       ├── db/
@@ -190,6 +202,7 @@ ProcessTwin.Py/
 │   ├── __init__.py
 │   ├── test_models.py              # Pydantic schema validation & bounds tests
 │   ├── test_alarms.py              # HAZOP warning and trip logic tests
+│   ├── test_ekf.py                 # EKF convergence, covariance & NIS anomaly tests
 │   ├── test_simulator.py           # Mass/energy balances & automated shutdown tests
 │   ├── test_storage.py             # Async SQLite CRUD & index tests
 │   ├── test_api.py                 # REST endpoints and WebSocket integration tests

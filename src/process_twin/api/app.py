@@ -126,6 +126,35 @@ async def get_telemetry_history(limit: int = 60):
     return await db.get_recent_telemetry(limit=min(limit, 300))
 
 
+@app.get("/api/ekf/diagnostics")
+async def get_ekf_diagnostics() -> dict:
+    """Returns current Extended Kalman Filter (EKF) internal states, covariance, gains, and NIS metrics."""
+    if twin.latest_ekf is None:
+        twin.step(dt_seconds=0.0)
+
+    ekf = twin.latest_ekf
+    return {
+        "status": "operational",
+        "estimate": {
+            "ca_mol_per_l": ekf.ca_mol_per_l if ekf else None,
+            "temp_celsius": ekf.temp_celsius if ekf else None,
+            "temp_kelvin": ekf.temp_kelvin if ekf else None,
+            "conversion_pct": ekf.conversion_pct if ekf else None,
+            "reaction_rate": ekf.reaction_rate if ekf else None,
+        },
+        "diagnostics": {
+            "temp_residual_c": ekf.temp_residual if ekf else None,
+            "nis": ekf.nis if ekf else None,
+            "sensor_healthy": (ekf.nis < 6.63) if ekf else True,
+            "p_ca": ekf.p_ca if ekf else None,
+            "p_temp": ekf.p_temp if ekf else None,
+            "p_ca_temp": ekf.p_ca_temp if ekf else None,
+            "kalman_gain_ca": ekf.kalman_gain_ca if ekf else None,
+            "kalman_gain_temp": ekf.kalman_gain_temp if ekf else None,
+        }
+    }
+
+
 @app.post("/api/actuators")
 async def override_actuators(command: ActuatorCommand) -> dict:
     """Applies operator control overrides (cooling valve, emergency feed shutoff)."""
