@@ -4,6 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ProcessTwin.Py — Industrial SCADA &amp; Digital Twin</title>
+  <!-- Chart.js local script with CDN fallback -->
+  <script src="/static/chart.umd.min.js"></script>
+  <script>
+    if (typeof Chart === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js"><\/script>');
+    }
+  </script>
   <style>
     :root {
       --bg-main: #0b0f19;
@@ -16,6 +23,7 @@
       --accent-emerald: #10b981;
       --accent-amber: #f59e0b;
       --accent-rose: #f43f5e;
+      --accent-purple: #a855f7;
       --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
       --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
@@ -92,7 +100,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 1rem;
+      margin-bottom: 0.85rem;
       padding-bottom: 0.6rem;
       border-bottom: 1px solid rgba(51, 65, 85, 0.6);
     }
@@ -178,8 +186,29 @@
       border-radius: 8px;
       padding: 0.7rem 0.85rem;
     }
-    .kpi-card .lbl { font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; }
+    .kpi-card .lbl { font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; font-family: var(--font-mono); }
     .kpi-card .num { font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); margin-top: 0.15rem; }
+    .kpi-card .sub-lbl {
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      margin-top: 0.25rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .nis-badge {
+      display: inline-block;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      font-family: var(--font-mono);
+    }
+    .nis-GOOD { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .nis-UNCERTAIN { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); }
+    .nis-BAD { background: rgba(244, 63, 94, 0.25); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.6); animation: pulse 1s infinite; }
 
     .diagram-container {
       background: #080c14;
@@ -190,14 +219,35 @@
       justify-content: center;
     }
 
-    /* Live Chart */
-    canvas#chartCanvas {
+    /* Live Chart & Tabs */
+    .chart-container {
+      position: relative;
+      height: 250px;
       width: 100%;
-      height: 220px;
       background: #080c14;
       border: 1px solid var(--border);
       border-radius: 8px;
+      padding: 0.5rem;
     }
+    .chart-tabs {
+      display: flex;
+      gap: 0.4rem;
+      align-items: center;
+    }
+    .chart-tab-btn {
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      padding: 0.25rem 0.6rem;
+      border-radius: 5px;
+      font-size: 0.72rem;
+      font-family: var(--font-mono);
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .chart-tab-btn:hover { color: var(--text-primary); border-color: var(--accent-blue); }
+    .chart-tab-btn.active { background: #0284c7; color: #fff; border-color: #38bdf8; }
 
     /* Alarm banner */
     .alarm-list {
@@ -237,7 +287,7 @@
       <span class="badge">Python 3 · Asyncio</span>
       <div class="brand-title">
         <h1>ProcessTwin.Py — Industrial SCADA &amp; Digital Twin Engine</h1>
-        <p>5 Hz WebSockets · Discrete Mass &amp; Energy Balances · Safety Instrumented Interlocks (SIS)</p>
+        <p>5 Hz WebSockets · EKF State Estimation · NMPC Optimization · Safety Interlocks (SIS)</p>
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:1rem;">
@@ -286,6 +336,29 @@
         🚨 <b>SIS INTERLOCK TRIPPED</b><br/>Cooling valve flooded to 100%. Click "Reset Plant State" to restore normal control.
       </div>
 
+      <!-- Advanced NMPC Reactor Controller Panel -->
+      <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+          <h3 style="font-size:0.8rem; font-weight:700; color:var(--accent-blue); text-transform:uppercase;">
+            NMPC Reactor Controller
+          </h3>
+          <span id="nmpcStatusBadge" style="font-size:0.7rem; font-family:var(--font-mono); padding:0.15rem 0.45rem; border-radius:4px; background:#1e293b; color:#94a3b8; border:1px solid #334155;">
+            DISABLED
+          </span>
+        </div>
+        <div class="control-group" style="margin-bottom:0.5rem;">
+          <label>Target Temp SP <span class="val" id="lblNmpcSp">85.0 °C</span></label>
+          <input type="range" id="inpNmpcSp" min="50" max="110" step="0.5" value="85" />
+        </div>
+        <div style="font-size:0.72rem; font-family:var(--font-mono); color:var(--text-secondary); line-height:1.45; margin-bottom:0.5rem;">
+          <div>Opt Valve (u*): <span id="nmpcOptValve" style="color:#38bdf8; font-weight:600;">--</span></div>
+          <div>Solve Time: <span id="nmpcSolveTime" style="color:#34d399; font-weight:600;">--</span></div>
+          <div>Cost (J): <span id="nmpcCost" style="color:#f8fafc; font-weight:600;">--</span></div>
+          <div>Tracking Error: <span id="nmpcError" style="color:#fbbf24; font-weight:600;">--</span></div>
+        </div>
+        <button class="btn-action" id="btnToggleNmpc" style="font-size:0.72rem; padding:0.45rem;" onclick="toggleNmpc()">NMPC: ENABLE</button>
+      </div>
+
       <!-- Enterprise .NET Telemetry Bridge Panel -->
       <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
@@ -308,49 +381,55 @@
         </div>
         <button class="btn-action" id="btnToggleBridge" style="font-size:0.72rem; padding:0.45rem; margin-top:0.4rem;" onclick="toggleBridge()">Streaming: ENABLED</button>
       </div>
-
-      <!-- Advanced NMPC Reactor Controller Panel -->
-      <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
-          <h3 style="font-size:0.8rem; font-weight:700; color:var(--accent-blue); text-transform:uppercase;">
-            NMPC Reactor Controller
-          </h3>
-          <span id="nmpcStatusBadge" style="font-size:0.7rem; font-family:var(--font-mono); padding:0.15rem 0.45rem; border-radius:4px; background:#1e293b; color:#94a3b8; border:1px solid #334155;">
-            DISABLED
-          </span>
-        </div>
-        <div class="control-group" style="margin-bottom:0.5rem;">
-          <label>Target Temp SP <span class="val" id="lblNmpcSp">85.0 °C</span></label>
-          <input type="range" id="inpNmpcSp" min="50" max="110" step="0.5" value="85" />
-        </div>
-        <div style="font-size:0.72rem; font-family:var(--font-mono); color:var(--text-secondary); line-height:1.45; margin-bottom:0.5rem;">
-          <div>Opt Valve (u*): <span id="nmpcOptValve" style="color:#38bdf8; font-weight:600;">--</span></div>
-          <div>Solve Time: <span id="nmpcSolveTime" style="color:#34d399; font-weight:600;">--</span></div>
-          <div>Cost (J): <span id="nmpcCost" style="color:#f8fafc; font-weight:600;">--</span></div>
-        </div>
-        <button class="btn-action" id="btnToggleNmpc" style="font-size:0.72rem; padding:0.45rem;" onclick="toggleNmpc()">NMPC: ENABLE</button>
-      </div>
     </aside>
 
     <!-- Right Workspace -->
     <section class="workspace">
-      <!-- KPI Row -->
+      <!-- Primary Physical Process KPI Grid -->
       <div class="kpi-grid">
         <div class="kpi-card">
           <div class="lbl">Buffer Tank Level (LT-101)</div>
           <div class="num" id="kpiLevel" style="color:var(--accent-blue);">5.00 m</div>
+          <div class="sub-lbl"><span>Range:</span><span>0.0 - 10.0 m</span></div>
         </div>
         <div class="kpi-card">
-          <div class="lbl">CSTR Temperature (TT-102)</div>
+          <div class="lbl">CSTR Temperature (TT-101)</div>
           <div class="num" id="kpiTemp" style="color:var(--accent-rose);">85.0 °C</div>
+          <div class="sub-lbl"><span>Limits:</span><span>Trip 135°C / Warn 115°C</span></div>
         </div>
         <div class="kpi-card">
-          <div class="lbl">Reactor Pressure (PT-103)</div>
+          <div class="lbl">Reactor Pressure (PT-101)</div>
           <div class="num" id="kpiPress">1.02 bar</div>
+          <div class="sub-lbl"><span>Relief:</span><span>5.00 bar</span></div>
         </div>
         <div class="kpi-card">
           <div class="lbl">Net Accumulation</div>
           <div class="num" id="kpiNetFlow">0.0 m³/h</div>
+          <div class="sub-lbl"><span>Balance:</span><span>Feed vs Discharge</span></div>
+        </div>
+      </div>
+
+      <!-- Extended Kalman Filter (EKF) State Estimator & Sensor Health KPI Grid -->
+      <div class="kpi-grid" style="margin-top:-0.35rem;">
+        <div class="kpi-card">
+          <div class="lbl">Reactant Ca (AT-101-EST)</div>
+          <div class="num" id="kpiCa" style="color:var(--accent-blue);">-- mol/L</div>
+          <div class="sub-lbl"><span>Conversion (XA):</span><span id="kpiConv" style="color:var(--accent-purple); font-weight:600;">--%</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="lbl">Filtered Temp (TIT-101-EST)</div>
+          <div class="num" id="kpiEkfTemp" style="color:var(--accent-emerald);">-- °C</div>
+          <div class="sub-lbl"><span>Residual (y-ŷ):</span><span id="kpiResidual" style="color:var(--accent-amber); font-weight:600;">-- °C</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="lbl">Reaction Rate (rA-EST)</div>
+          <div class="num" id="kpiRate" style="color:#34d399; font-size:1.15rem;">-- mol/(L·s)</div>
+          <div class="sub-lbl"><span>Arrhenius:</span><span style="color:#94a3b8;">k₀=7.2e10, E=72.7 kJ</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="lbl">Sensor Health (EKF NIS)</div>
+          <div class="num" id="kpiNisVal" style="color:var(--accent-amber);">--</div>
+          <div class="sub-lbl"><span>Sensor Status:</span><span id="kpiNisBadge" class="nis-badge nis-GOOD">INITIALIZING</span></div>
         </div>
       </div>
 
@@ -363,7 +442,7 @@
           </span>
         </div>
         <div class="diagram-container">
-          <svg viewBox="0 0 760 210" width="100%" height="210">
+          <svg viewBox="0 0 760 215" width="100%" height="215">
             <!-- Feed pipe -->
             <line x1="20" y1="105" x2="160" y2="105" stroke="#38bdf8" stroke-width="3" />
             <text x="30" y="92" fill="#94a3b8" font-family="monospace" font-size="11" id="svgFeedText">Feed: 24 m³/h</text>
@@ -387,31 +466,39 @@
             <text x="355" y="145" fill="#94a3b8" font-family="monospace" font-size="11" text-anchor="middle" id="svgDischargeText">24 m³/h</text>
 
             <!-- CSTR Reactor R-101 -->
-            <rect id="svgReactorBody" x="440" y="35" width="130" height="140" rx="20" fill="#1e293b" stroke="#10b981" stroke-width="2.5" />
+            <rect id="svgReactorBody" x="440" y="25" width="140" height="165" rx="18" fill="#1e293b" stroke="#10b981" stroke-width="2.5" />
             <!-- Cooling Jacket Outline -->
-            <path d="M 430 65 L 440 65 M 430 145 L 440 145 M 570 65 L 580 65 M 570 145 L 580 145" stroke="#38bdf8" stroke-width="4" />
-            <text x="505" y="65" fill="#f8fafc" font-family="monospace" font-weight="bold" font-size="13" text-anchor="middle">R-101</text>
-            <text x="505" y="82" fill="#94a3b8" font-family="sans-serif" font-size="10" text-anchor="middle">Exothermic CSTR</text>
-            <text id="svgReactorTempText" x="505" y="115" fill="#f43f5e" font-family="monospace" font-weight="bold" font-size="14" text-anchor="middle">85.0 °C</text>
-            <text id="svgReactorCoolingText" x="505" y="140" fill="#38bdf8" font-family="monospace" font-size="10" text-anchor="middle">Cooling: 45%</text>
+            <path d="M 430 55 L 440 55 M 430 160 L 440 160 M 580 55 L 590 55 M 580 160 L 590 160" stroke="#38bdf8" stroke-width="4" />
+            <text x="510" y="48" fill="#f8fafc" font-family="monospace" font-weight="bold" font-size="13" text-anchor="middle">R-101 Exothermic CSTR</text>
+            <text id="svgReactorTempText" x="510" y="75" fill="#f43f5e" font-family="monospace" font-weight="bold" font-size="15" text-anchor="middle">85.0 °C</text>
+            <text id="svgReactorCaText" x="510" y="98" fill="#38bdf8" font-family="monospace" font-weight="bold" font-size="11" text-anchor="middle">Ca: -- mol/L (--%)</text>
+            <text id="svgReactorCoolingText" x="510" y="120" fill="#34d399" font-family="monospace" font-size="11" text-anchor="middle">Cooling: 45%</text>
+            <text id="svgReactorEkfText" x="510" y="142" fill="#fbbf24" font-family="monospace" font-size="10" text-anchor="middle">NIS: 0.00 [OK]</text>
+            <text id="svgReactorNmpcText" x="510" y="162" fill="#a855f7" font-family="monospace" font-size="10" text-anchor="middle">NMPC: DISABLED</text>
 
             <!-- Reactor Product Effluent -->
-            <line x1="570" y1="105" x2="720" y2="105" stroke="#10b981" stroke-width="3" />
-            <text x="645" y="92" fill="#10b981" font-family="monospace" font-size="11" text-anchor="middle">Product Effluent</text>
+            <line x1="580" y1="105" x2="730" y2="105" stroke="#10b981" stroke-width="3" />
+            <text x="655" y="92" fill="#10b981" font-family="monospace" font-size="11" text-anchor="middle">Product Effluent</text>
           </svg>
         </div>
       </div>
 
-      <!-- Real-Time Rolling Strip Chart -->
+      <!-- Real-Time Interactive Strip Chart (Chart.js) -->
       <div class="panel">
         <div class="panel-header">
-          <h2>Real-Time Dynamic Telemetry Trend (60s Rolling Window)</h2>
-          <div style="font-family:var(--font-mono); font-size:0.75rem; display:flex; gap:1rem;">
-            <span style="color:var(--accent-blue);">— Tank Level (0-10 m)</span>
-            <span style="color:var(--accent-rose);">— Reactor Temp (20-160 °C)</span>
+          <div style="display:flex; align-items:center; gap:0.75rem;">
+            <h2>Dynamic Telemetry Trend</h2>
+            <span id="chartModeDesc" style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-secondary);">Thermal &amp; NMPC Prediction Horizon</span>
+          </div>
+          <div class="chart-tabs">
+            <button class="chart-tab-btn active" data-mode="thermal" onclick="setChartMode('thermal')">Thermal &amp; NMPC</button>
+            <button class="chart-tab-btn" data-mode="kinetics" onclick="setChartMode('kinetics')">Kinetics &amp; EKF</button>
+            <button class="chart-tab-btn" data-mode="actuators_nis" onclick="setChartMode('actuators_nis')">Actuators &amp; NIS</button>
           </div>
         </div>
-        <canvas id="chartCanvas" width="900" height="220"></canvas>
+        <div class="chart-container">
+          <canvas id="chartCanvas"></canvas>
+        </div>
       </div>
 
       <!-- Active Alarms Banner -->
@@ -430,8 +517,10 @@
   </main>
 
   <script>
-    const history = [];
-    const maxPoints = 120;
+    let history = [];
+    const maxPoints = 80;
+    let activeChartMode = 'thermal';
+    let chartInstance = null;
 
     const els = {
       statusPill: document.getElementById('plantStatusPill'),
@@ -440,6 +529,13 @@
       kpiTemp: document.getElementById('kpiTemp'),
       kpiPress: document.getElementById('kpiPress'),
       kpiNetFlow: document.getElementById('kpiNetFlow'),
+      kpiCa: document.getElementById('kpiCa'),
+      kpiConv: document.getElementById('kpiConv'),
+      kpiEkfTemp: document.getElementById('kpiEkfTemp'),
+      kpiResidual: document.getElementById('kpiResidual'),
+      kpiRate: document.getElementById('kpiRate'),
+      kpiNisVal: document.getElementById('kpiNisVal'),
+      kpiNisBadge: document.getElementById('kpiNisBadge'),
       inpCooling: document.getElementById('inpCooling'),
       inpFeedFlow: document.getElementById('inpFeedFlow'),
       inpDischFlow: document.getElementById('inpDischFlow'),
@@ -456,7 +552,10 @@
       svgLiquidLine: document.getElementById('svgLiquidLine'),
       svgTankLevelText: document.getElementById('svgTankLevelText'),
       svgReactorTempText: document.getElementById('svgReactorTempText'),
+      svgReactorCaText: document.getElementById('svgReactorCaText'),
       svgReactorCoolingText: document.getElementById('svgReactorCoolingText'),
+      svgReactorEkfText: document.getElementById('svgReactorEkfText'),
+      svgReactorNmpcText: document.getElementById('svgReactorNmpcText'),
       svgReactorBody: document.getElementById('svgReactorBody'),
       svgValveLeft: document.getElementById('svgValveLeft'),
       svgValveRight: document.getElementById('svgValveRight'),
@@ -464,6 +563,7 @@
       alarmCountBadge: document.getElementById('alarmCountBadge'),
       alarmListContainer: document.getElementById('alarmListContainer'),
       chartCanvas: document.getElementById('chartCanvas'),
+      chartModeDesc: document.getElementById('chartModeDesc'),
       feedValveAlert: document.getElementById('feedValveAlert'),
     };
 
@@ -528,6 +628,318 @@
       }
     });
 
+    window.setChartMode = function(mode) {
+      activeChartMode = mode;
+      document.querySelectorAll('.chart-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+      });
+
+      const descs = {
+        thermal: 'Thermal & NMPC Horizon Prediction',
+        kinetics: 'Reactant Concentration (Ca) & Conversion (XA)',
+        actuators_nis: 'Actuator Modulation & EKF Sensor Innovation (NIS)'
+      };
+      if (els.chartModeDesc) els.chartModeDesc.textContent = descs[mode] || '';
+
+      if (chartInstance) {
+        chartInstance.destroy();
+        chartInstance = null;
+      }
+      initChart();
+    };
+
+    function initChart() {
+      if (typeof Chart === 'undefined') {
+        return; // Fallback to canvas drawing handled in drawFallbackChart()
+      }
+
+      const ctx = els.chartCanvas.getContext('2d');
+
+      if (activeChartMode === 'thermal') {
+        chartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [
+              {
+                label: 'Measured Temp (TT-101)',
+                data: [],
+                borderColor: '#f43f5e',
+                backgroundColor: 'rgba(244, 63, 94, 0.1)',
+                borderWidth: 2.2,
+                pointRadius: 0,
+                tension: 0.15
+              },
+              {
+                label: 'EKF Filtered Temp (TIT-101-EST)',
+                data: [],
+                borderColor: '#10b981',
+                borderDash: [4, 3],
+                borderWidth: 2.0,
+                pointRadius: 0,
+                tension: 0.15
+              },
+              {
+                label: 'NMPC Setpoint (TIC-101-SP)',
+                data: [],
+                borderColor: '#f59e0b',
+                borderDash: [2, 2],
+                borderWidth: 1.5,
+                pointRadius: 0
+              },
+              {
+                label: 'NMPC Horizon Prediction',
+                data: [],
+                borderColor: '#38bdf8',
+                borderDash: [5, 4],
+                borderWidth: 2.2,
+                pointRadius: 2.5,
+                pointBackgroundColor: '#38bdf8',
+                tension: 0.2
+              },
+              {
+                label: 'Warning (115°C)',
+                data: [],
+                borderColor: 'rgba(245, 158, 11, 0.5)',
+                borderDash: [4, 4],
+                borderWidth: 1,
+                pointRadius: 0
+              },
+              {
+                label: 'SIS Trip (135°C)',
+                data: [],
+                borderColor: 'rgba(244, 63, 94, 0.75)',
+                borderDash: [6, 4],
+                borderWidth: 1.5,
+                pointRadius: 0
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: {
+                  boxWidth: 12,
+                  font: { family: "'JetBrains Mono', Consolas, monospace", size: 10 },
+                  color: '#94a3b8'
+                }
+              },
+              tooltip: {
+                backgroundColor: '#111827',
+                titleColor: '#f8fafc',
+                bodyColor: '#e2e8f0',
+                borderColor: '#334155',
+                borderWidth: 1,
+                padding: 8,
+                titleFont: { family: "'JetBrains Mono', monospace", size: 11 },
+                bodyFont: { family: "'JetBrains Mono', monospace", size: 10 }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                ticks: { color: '#64748b', font: { family: 'monospace', size: 9 }, maxTicksLimit: 10 }
+              },
+              y: {
+                min: 20,
+                max: 160,
+                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                ticks: {
+                  color: '#f43f5e',
+                  font: { family: 'monospace', size: 10 },
+                  callback: v => `${v}°C`
+                }
+              }
+            }
+          }
+        });
+      } else if (activeChartMode === 'kinetics') {
+        chartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [
+              {
+                label: 'Reactant Ca (AT-101-EST)',
+                data: [],
+                borderColor: '#38bdf8',
+                backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                borderWidth: 2.2,
+                pointRadius: 0,
+                yAxisID: 'yCa'
+              },
+              {
+                label: 'Reaction Conversion XA',
+                data: [],
+                borderColor: '#a855f7',
+                borderWidth: 2.0,
+                pointRadius: 0,
+                yAxisID: 'yConv'
+              },
+              {
+                label: 'Reaction Rate rA (x100)',
+                data: [],
+                borderColor: '#34d399',
+                borderDash: [3, 3],
+                borderWidth: 1.5,
+                pointRadius: 0,
+                yAxisID: 'yCa'
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: {
+                  boxWidth: 12,
+                  font: { family: "'JetBrains Mono', Consolas, monospace", size: 10 },
+                  color: '#94a3b8'
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                ticks: { color: '#64748b', font: { family: 'monospace', size: 9 }, maxTicksLimit: 10 }
+              },
+              yCa: {
+                type: 'linear',
+                position: 'left',
+                min: 0.0,
+                max: 2.5,
+                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                ticks: {
+                  color: '#38bdf8',
+                  font: { family: 'monospace', size: 10 },
+                  callback: v => `${v.toFixed(1)} M`
+                }
+              },
+              yConv: {
+                type: 'linear',
+                position: 'right',
+                min: 0,
+                max: 100,
+                grid: { drawOnChartArea: false },
+                ticks: {
+                  color: '#a855f7',
+                  font: { family: 'monospace', size: 10 },
+                  callback: v => `${v}%`
+                }
+              }
+            }
+          }
+        });
+      } else if (activeChartMode === 'actuators_nis') {
+        chartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [
+              {
+                label: 'Cooling Valve Actual (TCV-101)',
+                data: [],
+                borderColor: '#38bdf8',
+                borderWidth: 2.0,
+                pointRadius: 0,
+                yAxisID: 'yValve'
+              },
+              {
+                label: 'NMPC Optimal Valve (TCV-101-NMPC)',
+                data: [],
+                borderColor: '#34d399',
+                borderDash: [4, 3],
+                borderWidth: 2.0,
+                pointRadius: 0,
+                yAxisID: 'yValve'
+              },
+              {
+                label: 'EKF NIS Statistic',
+                data: [],
+                borderColor: '#f59e0b',
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                borderWidth: 2.0,
+                pointRadius: 0,
+                yAxisID: 'yNis'
+              },
+              {
+                label: 'NIS 95% Limit (3.84)',
+                data: [],
+                borderColor: 'rgba(245, 158, 11, 0.6)',
+                borderDash: [4, 4],
+                borderWidth: 1.2,
+                pointRadius: 0,
+                yAxisID: 'yNis'
+              },
+              {
+                label: 'NIS 99% Trip Limit (6.63)',
+                data: [],
+                borderColor: 'rgba(244, 63, 94, 0.8)',
+                borderDash: [6, 4],
+                borderWidth: 1.5,
+                pointRadius: 0,
+                yAxisID: 'yNis'
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: {
+                  boxWidth: 12,
+                  font: { family: "'JetBrains Mono', Consolas, monospace", size: 10 },
+                  color: '#94a3b8'
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                ticks: { color: '#64748b', font: { family: 'monospace', size: 9 }, maxTicksLimit: 10 }
+              },
+              yValve: {
+                type: 'linear',
+                position: 'left',
+                min: 0,
+                max: 100,
+                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                ticks: {
+                  color: '#38bdf8',
+                  font: { family: 'monospace', size: 10 },
+                  callback: v => `${v}%`
+                }
+              },
+              yNis: {
+                type: 'linear',
+                position: 'right',
+                min: 0,
+                max: 12,
+                grid: { drawOnChartArea: false },
+                ticks: {
+                  color: '#f59e0b',
+                  font: { family: 'monospace', size: 10 }
+                }
+              }
+            }
+          }
+        });
+      }
+    }
+
     function updatePlantUI(frame) {
       feedValveOpen = frame.feed_valve_open;
       els.kpiLevel.textContent = `${frame.tank_level_m.toFixed(2)} m`;
@@ -536,6 +948,39 @@
 
       const netFlow = frame.feed_flow_m3_h - frame.discharge_flow_m3_h;
       els.kpiNetFlow.textContent = `${netFlow >= 0 ? '+' : ''}${netFlow.toFixed(1)} m³/h`;
+
+      // Update EKF Online State Estimation KPIs
+      if (frame.estimated_ca_mol_l !== null && frame.estimated_ca_mol_l !== undefined) {
+        els.kpiCa.textContent = `${frame.estimated_ca_mol_l.toFixed(3)} mol/L`;
+      }
+      if (frame.estimated_conversion_pct !== null && frame.estimated_conversion_pct !== undefined) {
+        els.kpiConv.textContent = `${frame.estimated_conversion_pct.toFixed(1)}%`;
+      }
+      if (frame.estimated_temp_c !== null && frame.estimated_temp_c !== undefined) {
+        els.kpiEkfTemp.textContent = `${frame.estimated_temp_c.toFixed(1)} °C`;
+      }
+      if (frame.ekf_temp_residual_c !== null && frame.ekf_temp_residual_c !== undefined) {
+        const sign = frame.ekf_temp_residual_c >= 0 ? '+' : '';
+        els.kpiResidual.textContent = `${sign}${frame.ekf_temp_residual_c.toFixed(2)} °C`;
+      }
+      if (frame.estimated_reaction_rate !== null && frame.estimated_reaction_rate !== undefined) {
+        els.kpiRate.textContent = `${frame.estimated_reaction_rate.toFixed(4)} mol/(L·s)`;
+      }
+
+      // Update Sensor Validation (EKF NIS) Badge
+      if (frame.ekf_nis !== null && frame.ekf_nis !== undefined) {
+        els.kpiNisVal.textContent = frame.ekf_nis.toFixed(2);
+        if (frame.ekf_nis <= 3.84) {
+          els.kpiNisBadge.className = 'nis-badge nis-GOOD';
+          els.kpiNisBadge.textContent = 'HEALTHY (NIS < 3.84)';
+        } else if (frame.ekf_nis <= 6.63) {
+          els.kpiNisBadge.className = 'nis-badge nis-UNCERTAIN';
+          els.kpiNisBadge.textContent = 'DRIFT (3.84 - 6.63)';
+        } else {
+          els.kpiNisBadge.className = 'nis-badge nis-BAD';
+          els.kpiNisBadge.textContent = 'FAULT / ANOMALY (> 6.63)';
+        }
+      }
 
       // Status pill
       els.statusPill.className = `status-pill status-${frame.status}`;
@@ -577,6 +1022,7 @@
       const nmpcValve = document.getElementById('nmpcOptValve');
       const nmpcTime = document.getElementById('nmpcSolveTime');
       const nmpcCost = document.getElementById('nmpcCost');
+      const nmpcError = document.getElementById('nmpcError');
       const lblNmpcSp = document.getElementById('lblNmpcSp');
 
       if (nmpcBadge) {
@@ -600,6 +1046,8 @@
           }
           if (frame.nmpc_target_temp_c !== null && frame.nmpc_target_temp_c !== undefined) {
             lblNmpcSp.textContent = `${frame.nmpc_target_temp_c.toFixed(1)} °C`;
+            const err = frame.reactor_temp_c - frame.nmpc_target_temp_c;
+            if (nmpcError) nmpcError.textContent = `${err >= 0 ? '+' : ''}${err.toFixed(2)} °C`;
           }
         } else {
           nmpcBadge.textContent = 'DISABLED';
@@ -612,6 +1060,7 @@
           nmpcValve.textContent = '--';
           nmpcTime.textContent = '--';
           nmpcCost.textContent = '--';
+          if (nmpcError) nmpcError.textContent = '--';
         }
       }
 
@@ -622,7 +1071,7 @@
         });
       }
 
-      // SVG Tank Liquid Level (tank rect top: 30, height: 150)
+      // SVG Tank Liquid Level
       const maxH = 10.0;
       const frac = Math.min(1.0, Math.max(0.0, frame.tank_level_m / maxH));
       const liquidHeight = frac * 146;
@@ -637,9 +1086,21 @@
       els.svgFeedText.textContent = `Feed: ${frame.feed_flow_m3_h.toFixed(1)} m³/h`;
       els.svgDischargeText.textContent = `${frame.discharge_flow_m3_h.toFixed(1)} m³/h`;
 
-      // Reactor Temp & Warning Colors
+      // SVG CSTR Reactor Display
       els.svgReactorTempText.textContent = `${frame.reactor_temp_c.toFixed(1)} °C`;
       els.svgReactorCoolingText.textContent = `Cooling: ${frame.cooling_valve_pct.toFixed(0)}%`;
+      
+      const caVal = frame.estimated_ca_mol_l !== null ? frame.estimated_ca_mol_l.toFixed(2) : '--';
+      const convVal = frame.estimated_conversion_pct !== null ? frame.estimated_conversion_pct.toFixed(0) : '--';
+      els.svgReactorCaText.textContent = `Ca: ${caVal} M (${convVal}%)`;
+
+      if (frame.ekf_nis !== null && frame.ekf_nis !== undefined) {
+        const nisOk = frame.ekf_nis <= 3.84;
+        els.svgReactorEkfText.textContent = `NIS: ${frame.ekf_nis.toFixed(2)} [${nisOk ? 'OK' : 'CHECK'}]`;
+        els.svgReactorEkfText.setAttribute('fill', nisOk ? '#10b981' : (frame.ekf_nis <= 6.63 ? '#f59e0b' : '#f43f5e'));
+      }
+
+      els.svgReactorNmpcText.textContent = frame.nmpc_enabled ? `NMPC: SP ${frame.nmpc_target_temp_c?.toFixed(0) || 85}°C` : 'NMPC: DISABLED';
 
       if (frame.reactor_temp_c >= 135) {
         els.svgReactorBody.setAttribute('stroke', '#f43f5e');
@@ -649,14 +1110,94 @@
         els.svgReactorBody.setAttribute('stroke', '#10b981');
       }
 
-      // Append to rolling chart
+      // Append to history buffer
       history.push(frame);
       if (history.length > maxPoints) history.shift();
-      drawChart();
+
+      // Render chart
+      renderLiveChart(frame);
     }
 
-    function drawChart() {
+    function renderLiveChart(latestFrame) {
+      if (typeof Chart === 'undefined' || !chartInstance) {
+        drawFallbackChart();
+        return;
+      }
+
+      const labels = history.map((f, i) => `-${((history.length - 1 - i) * 0.2).toFixed(1)}s`);
+
+      if (activeChartMode === 'thermal') {
+        const horizon = latestFrame.nmpc_predicted_temp_trajectory || [];
+        const hasHorizon = latestFrame.nmpc_enabled && horizon.length > 0;
+
+        // Extended labels for NMPC horizon
+        const extendedLabels = [...labels];
+        if (hasHorizon) {
+          for (let step = 1; step <= horizon.length; step++) {
+            extendedLabels.push(`+${(step * 0.5).toFixed(1)}s`);
+          }
+        }
+        chartInstance.data.labels = extendedLabels;
+
+        // Dataset 0: Measured Temp
+        chartInstance.data.datasets[0].data = history.map(f => f.reactor_temp_c);
+
+        // Dataset 1: EKF Filtered Temp
+        chartInstance.data.datasets[1].data = history.map(f => f.estimated_temp_c !== null ? f.estimated_temp_c : f.reactor_temp_c);
+
+        // Dataset 2: NMPC Setpoint
+        const sp = latestFrame.nmpc_target_temp_c || 85.0;
+        chartInstance.data.datasets[2].data = extendedLabels.map(() => sp);
+
+        // Dataset 3: NMPC Prediction Horizon (connects current temp to forward trajectory)
+        if (hasHorizon) {
+          const horizonData = new Array(history.length - 1).fill(null);
+          horizonData.push(latestFrame.reactor_temp_c); // Connect anchor point
+          horizon.forEach(val => horizonData.push(val));
+          chartInstance.data.datasets[3].data = horizonData;
+        } else {
+          chartInstance.data.datasets[3].data = [];
+        }
+
+        // Dataset 4 & 5: Warning (115°C) & Trip (135°C)
+        chartInstance.data.datasets[4].data = extendedLabels.map(() => 115.0);
+        chartInstance.data.datasets[5].data = extendedLabels.map(() => 135.0);
+
+      } else if (activeChartMode === 'kinetics') {
+        chartInstance.data.labels = labels;
+
+        // Dataset 0: Ca
+        chartInstance.data.datasets[0].data = history.map(f => f.estimated_ca_mol_l !== null ? f.estimated_ca_mol_l : null);
+
+        // Dataset 1: Conversion XA
+        chartInstance.data.datasets[1].data = history.map(f => f.estimated_conversion_pct !== null ? f.estimated_conversion_pct : null);
+
+        // Dataset 2: Reaction Rate (scaled by 100 for visual clarity on 0-2.5 scale)
+        chartInstance.data.datasets[2].data = history.map(f => f.estimated_reaction_rate !== null ? f.estimated_reaction_rate * 100.0 : null);
+
+      } else if (activeChartMode === 'actuators_nis') {
+        chartInstance.data.labels = labels;
+
+        // Dataset 0: Actual Cooling Valve %
+        chartInstance.data.datasets[0].data = history.map(f => f.cooling_valve_pct);
+
+        // Dataset 1: NMPC Optimal Valve %
+        chartInstance.data.datasets[1].data = history.map(f => f.nmpc_optimal_cooling_pct !== null ? f.nmpc_optimal_cooling_pct : null);
+
+        // Dataset 2: EKF NIS
+        chartInstance.data.datasets[2].data = history.map(f => f.ekf_nis !== null ? f.ekf_nis : null);
+
+        // Dataset 3 & 4: Limits
+        chartInstance.data.datasets[3].data = labels.map(() => 3.84);
+        chartInstance.data.datasets[4].data = labels.map(() => 6.63);
+      }
+
+      chartInstance.update('none'); // Update without animation for 5 Hz smoothness
+    }
+
+    function drawFallbackChart() {
       const cvs = els.chartCanvas;
+      if (!cvs) return;
       const ctx = cvs.getContext('2d');
       const w = cvs.width;
       const h = cvs.height;
@@ -668,7 +1209,6 @@
       const plotW = w - pad.left - pad.right;
       const plotH = h - pad.top - pad.bottom;
 
-      // Draw gridlines
       ctx.strokeStyle = '#1e293b';
       ctx.lineWidth = 1;
       for (let i = 0; i <= 4; i++) {
@@ -679,69 +1219,9 @@
         ctx.stroke();
       }
 
-      // Dashed safety thresholds
-      ctx.setLineDash([4, 4]);
-      // Level Trip (9.5m)
-      const yLTrip = pad.top + (1 - (9.5 / 10.0)) * plotH;
-      ctx.strokeStyle = 'rgba(244, 63, 94, 0.45)';
-      ctx.beginPath();
-      ctx.moveTo(pad.left, yLTrip);
-      ctx.lineTo(pad.left + plotW, yLTrip);
-      ctx.stroke();
-      ctx.font = '9px monospace';
-      ctx.fillStyle = '#fb7185';
-      ctx.fillText('9.5m TRIP', pad.left + 5, yLTrip - 3);
-
-      // Temp Trip (135°C -> (135-20)/140 = 0.8214)
-      const yTTrip = pad.top + (1 - (115.0 / 140.0)) * plotH;
-      ctx.strokeStyle = 'rgba(244, 63, 94, 0.45)';
-      ctx.beginPath();
-      ctx.moveTo(pad.left, yTTrip);
-      ctx.lineTo(pad.left + plotW, yTTrip);
-      ctx.stroke();
-      ctx.fillText('135°C TRIP', pad.left + plotW - 65, yTTrip - 3);
-      ctx.setLineDash([]);
-
-      // Left axis: Level 0 to 10 m
-      ctx.font = '10px monospace';
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillText('10m', 15, pad.top + 8);
-      ctx.fillText('0m', 20, pad.top + plotH);
-
-      // Right axis: Temp 20 to 160 °C
-      ctx.fillStyle = '#f43f5e';
-      ctx.fillText('160°C', w - 45, pad.top + 8);
-      ctx.fillText('20°C', w - 45, pad.top + plotH);
-
-      const n = history.length;
-
-      // Draw Level Line (Blue)
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      history.forEach((f, i) => {
-        const x = pad.left + (i / (maxPoints - 1)) * plotW;
-        const normL = Math.max(0, Math.min(10, f.tank_level_m)) / 10.0;
-        const y = pad.top + (1 - normL) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
-
-      // Glowing dot & label on last Level point
-      const lastX = pad.left + ((n - 1) / (maxPoints - 1)) * plotW;
-      const lastLNorm = Math.max(0, Math.min(10, history[n - 1].tank_level_m)) / 10.0;
-      const lastLY = pad.top + (1 - lastLNorm) * plotH;
-      ctx.fillStyle = '#38bdf8';
-      ctx.beginPath();
-      ctx.arc(lastX, lastLY, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.font = 'bold 10px monospace';
-      ctx.fillText(`${history[n - 1].tank_level_m.toFixed(2)}m`, lastX + 6, lastLY - 2);
-
-      // Draw Temp Line (Rose)
+      // Draw Temp Line
       ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 2.2;
       ctx.beginPath();
       history.forEach((f, i) => {
         const x = pad.left + (i / (maxPoints - 1)) * plotW;
@@ -752,15 +1232,21 @@
       });
       ctx.stroke();
 
-      // Glowing dot & label on last Temp point
-      const lastTNorm = Math.max(0, Math.min(140, history[n - 1].reactor_temp_c - 20)) / 140.0;
-      const lastTY = pad.top + (1 - lastTNorm) * plotH;
-      ctx.fillStyle = '#f43f5e';
+      // Draw EKF Filtered Temp Line
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([4, 3]);
       ctx.beginPath();
-      ctx.arc(lastX, lastTY, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.font = 'bold 10px monospace';
-      ctx.fillText(`${history[n - 1].reactor_temp_c.toFixed(1)}°C`, lastX + 6, lastTY + 10);
+      history.forEach((f, i) => {
+        const x = pad.left + (i / (maxPoints - 1)) * plotW;
+        const temp = f.estimated_temp_c !== null ? f.estimated_temp_c : f.reactor_temp_c;
+        const normT = Math.max(0, Math.min(140, temp - 20)) / 140.0;
+        const y = pad.top + (1 - normT) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     async function pollAlarms() {
@@ -784,9 +1270,7 @@
             </div>
           </div>
         `).join('');
-      } catch (e) {
-        // quiet error
-      }
+      } catch (e) {}
     }
 
     window.ackAlarm = async function(id) {
@@ -919,6 +1403,7 @@
       });
     }
 
+    initChart();
     initHistory();
     connectWebSocket();
     setInterval(pollAlarms, 1000);

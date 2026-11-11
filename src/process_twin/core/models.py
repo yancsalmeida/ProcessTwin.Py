@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from pydantic import BaseModel, Field
 
 
@@ -47,6 +47,7 @@ class PlantTelemetry(BaseModel):
     nmpc_optimal_cooling_pct: Optional[float] = Field(default=None, description="Optimal cooling valve position computed by NMPC optimizer (%)")
     nmpc_solve_time_ms: Optional[float] = Field(default=None, description="Execution time of NMPC optimizer in milliseconds")
     nmpc_cost: Optional[float] = Field(default=None, description="Objective function cost value of optimal trajectory")
+    nmpc_predicted_temp_trajectory: Optional[List[float]] = Field(default=None, description="Forward predicted temperature trajectory across prediction horizon")
 
 
 class AlarmEvent(BaseModel):

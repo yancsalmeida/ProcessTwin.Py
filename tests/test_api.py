@@ -15,7 +15,15 @@ async def async_client():
 async def test_get_dashboard(async_client):
     response = await async_client.get("/")
     assert response.status_code == 200
-    assert "ProcessTwin" in response.text or "SCADA" in response.text or "Digital Twin" in response.text
+    assert "ProcessTwin" in response.text
+    assert "TIT-101-EST" in response.text
+    assert "AT-101-EST" in response.text
+    assert "chartCanvas" in response.text
+    assert "chart.umd.min.js" in response.text
+
+    static_resp = await async_client.get("/static/chart.umd.min.js")
+    assert static_resp.status_code == 200
+    assert len(static_resp.content) > 100000
 
 
 async def test_get_current_telemetry(async_client):

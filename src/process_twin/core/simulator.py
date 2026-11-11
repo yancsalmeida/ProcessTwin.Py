@@ -230,6 +230,7 @@ class PlantDigitalTwin:
             nmpc_optimal_cooling_pct=self.latest_nmpc.optimal_cooling_valve_pct if (self.nmpc_enabled and self.latest_nmpc) else None,
             nmpc_solve_time_ms=self.latest_nmpc.solve_time_ms if (self.nmpc_enabled and self.latest_nmpc) else None,
             nmpc_cost=self.latest_nmpc.cost if (self.nmpc_enabled and self.latest_nmpc) else None,
+            nmpc_predicted_temp_trajectory=self.latest_nmpc.predicted_temp_trajectory if (self.nmpc_enabled and self.latest_nmpc) else None,
         )
 
         # Safety Interlock & Alarm Evaluation (SIS)
