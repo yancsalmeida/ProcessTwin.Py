@@ -10,6 +10,7 @@ from process_twin.core.models import (
 )
 from process_twin.core.alarms import evaluate_safety_alarms
 from process_twin.core.ekf import CstrExtendedKalmanFilter, EkfEstimate
+from process_twin.core.nmpc import CstrNonlinearMpc, NmpcConfig, NmpcResult
 
 
 class PlantDigitalTwin:
@@ -66,6 +67,15 @@ class PlantDigitalTwin:
         )
         self.latest_ekf: Optional[EkfEstimate] = None
 
+        # Non-Linear Model Predictive Controller (NMPC) for CSTR
+        self.nmpc = CstrNonlinearMpc(
+            reactor_volume_m3=self.reactor_volume_m3,
+            coolant_temp_c=self.coolant_temp_c,
+            nominal_flow_m3_h=24.0,
+        )
+        self.nmpc_enabled = False
+        self.latest_nmpc: Optional[NmpcResult] = None
+
     def update_thermodynamics(self, flash_data: Optional[dict]) -> None:
         """Updates real-fluid thermodynamic state resolved from ChemFlow.NET."""
         if not flash_data:
@@ -88,14 +98,31 @@ class PlantDigitalTwin:
         self.active_alarms.clear()
         self.ekf.reset(ca=0.5, temp_c=85.0)
         self.latest_ekf = None
+        self.nmpc_enabled = False
+        self.nmpc.reset(initial_u=45.0)
+        self.latest_nmpc = None
 
     def apply_actuator_command(self, cmd: ActuatorCommand) -> None:
         """Applies manual operator overrides from SCADA/HMI interface."""
         if cmd.time_scale is not None:
             self.time_scale = max(1.0, min(20.0, cmd.time_scale))
 
+        if cmd.nmpc_enabled is not None:
+            self.nmpc_enabled = cmd.nmpc_enabled
+            if self.nmpc_enabled:
+                self.nmpc.reset(initial_u=self.cooling_valve_pct)
+
+        if cmd.nmpc_target_temp_c is not None or cmd.nmpc_target_ca is not None:
+            self.nmpc.update_setpoints(
+                temp_setpoint_c=cmd.nmpc_target_temp_c,
+                ca_setpoint=cmd.nmpc_target_ca,
+            )
+
         if cmd.cooling_valve_pct is not None:
             self.cooling_valve_pct = max(0.0, min(100.0, cmd.cooling_valve_pct))
+            # If manual cooling valve setpoint is explicitly given without specifying nmpc_enabled, disable NMPC
+            if cmd.nmpc_enabled is None:
+                self.nmpc_enabled = False
 
         if cmd.feed_valve_open is not None:
             self.feed_valve_open = cmd.feed_valve_open
@@ -162,6 +189,19 @@ class PlantDigitalTwin:
             feed_active=reactor_feed_active,
         )
 
+        # NMPC Closed-Loop Execution (modulate cooling jacket valve using real-time EKF state estimates)
+        if self.nmpc_enabled and not self.interlock_tripped and dt_seconds > 0.0:
+            est_ca = self.latest_ekf.ca_mol_per_l if self.latest_ekf else 0.5
+            est_temp = self.latest_ekf.temp_celsius if self.latest_ekf else noisy_temp
+            self.latest_nmpc = self.nmpc.compute_optimal_move(
+                current_ca=est_ca,
+                current_temp_c=est_temp,
+                flow_m3_h=self.discharge_flow_m3_h,
+                feed_active=reactor_feed_active,
+                u_prev=self.cooling_valve_pct,
+            )
+            self.cooling_valve_pct = self.latest_nmpc.optimal_cooling_valve_pct
+
         frame = PlantTelemetry(
             timestamp=datetime.now(timezone.utc),
             tank_level_m=round(noisy_level, 3),
@@ -185,6 +225,11 @@ class PlantDigitalTwin:
             estimated_reaction_rate=self.latest_ekf.reaction_rate if self.latest_ekf else None,
             ekf_temp_residual_c=self.latest_ekf.temp_residual if self.latest_ekf else None,
             ekf_nis=self.latest_ekf.nis if self.latest_ekf else None,
+            nmpc_enabled=self.nmpc_enabled,
+            nmpc_target_temp_c=self.nmpc.config.temp_setpoint_c if self.nmpc_enabled else None,
+            nmpc_optimal_cooling_pct=self.latest_nmpc.optimal_cooling_valve_pct if (self.nmpc_enabled and self.latest_nmpc) else None,
+            nmpc_solve_time_ms=self.latest_nmpc.solve_time_ms if (self.nmpc_enabled and self.latest_nmpc) else None,
+            nmpc_cost=self.latest_nmpc.cost if (self.nmpc_enabled and self.latest_nmpc) else None,
         )
 
         # Safety Interlock & Alarm Evaluation (SIS)
@@ -192,10 +237,12 @@ class PlantDigitalTwin:
         self.status = status
 
         if should_trip and not self.interlock_tripped:
-            # Automated safety response: shut inlet feed valve and flood cooling jacket!
+            # Automated safety response: shut inlet feed valve, disable NMPC, and flood cooling jacket!
             self.interlock_tripped = True
+            self.nmpc_enabled = False
             self.feed_valve_open = False
             self.cooling_valve_pct = 100.0
+            frame.nmpc_enabled = False
             frame.interlock_tripped = True
             frame.feed_valve_open = False
             frame.cooling_valve_pct = 100.0
@@ -216,3 +263,50 @@ class PlantDigitalTwin:
                 alarm.acknowledged = True
                 return True
         return False
+
+    def enable_nmpc(
+        self,
+        enabled: bool,
+        temp_setpoint_c: Optional[float] = None,
+        ca_setpoint: Optional[float] = None,
+    ) -> bool:
+        """Enables or disables NMPC closed-loop controller."""
+        self.nmpc_enabled = enabled
+        if enabled:
+            self.nmpc.update_setpoints(temp_setpoint_c=temp_setpoint_c, ca_setpoint=ca_setpoint)
+            self.nmpc.reset(initial_u=self.cooling_valve_pct)
+        return self.nmpc_enabled
+
+    def update_nmpc_setpoints(
+        self,
+        temp_setpoint_c: Optional[float] = None,
+        ca_setpoint: Optional[float] = None,
+    ) -> None:
+        """Updates NMPC tracking setpoints."""
+        self.nmpc.update_setpoints(temp_setpoint_c=temp_setpoint_c, ca_setpoint=ca_setpoint)
+
+    def get_nmpc_diagnostics(self) -> dict:
+        """Returns comprehensive diagnostic telemetry from NMPC optimizer."""
+        return {
+            "enabled": self.nmpc_enabled,
+            "config": {
+                "prediction_horizon": self.nmpc.config.prediction_horizon,
+                "control_horizon": self.nmpc.config.control_horizon,
+                "temp_setpoint_c": self.nmpc.config.temp_setpoint_c,
+                "ca_setpoint": self.nmpc.config.ca_setpoint,
+                "max_safe_temp_c": self.nmpc.config.max_safe_temp_c,
+                "max_delta_u_pct": self.nmpc.config.max_delta_u_pct,
+                "nominal_u_pct": self.nmpc.config.nominal_u_pct,
+            },
+            "latest_result": {
+                "optimal_cooling_valve_pct": self.latest_nmpc.optimal_cooling_valve_pct,
+                "predicted_temp_trajectory": self.latest_nmpc.predicted_temp_trajectory,
+                "predicted_ca_trajectory": self.latest_nmpc.predicted_ca_trajectory,
+                "planned_control_moves": self.latest_nmpc.planned_control_moves,
+                "cost": self.latest_nmpc.cost,
+                "iterations": self.latest_nmpc.iterations,
+                "solve_time_ms": self.latest_nmpc.solve_time_ms,
+                "converged": self.latest_nmpc.converged,
+                "temp_tracking_error": self.latest_nmpc.temp_tracking_error,
+            } if self.latest_nmpc else None,
+        }

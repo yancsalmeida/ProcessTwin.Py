@@ -12,6 +12,8 @@ from process_twin.core.models import (
     PlantTelemetry,
     ActuatorCommand,
     AlarmEvent,
+    NmpcToggleCommand,
+    NmpcSetpointsCommand,
 )
 from process_twin.core.simulator import PlantDigitalTwin
 from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge, BridgeStatus
@@ -152,6 +154,48 @@ async def get_ekf_diagnostics() -> dict:
             "kalman_gain_ca": ekf.kalman_gain_ca if ekf else None,
             "kalman_gain_temp": ekf.kalman_gain_temp if ekf else None,
         }
+    }
+
+
+# --- Non-Linear Model Predictive Control (NMPC) Endpoints ---
+
+@app.get("/api/nmpc/diagnostics")
+async def get_nmpc_diagnostics() -> dict:
+    """Returns NMPC controller configuration, internal status, predicted trajectories, and solver performance."""
+    return twin.get_nmpc_diagnostics()
+
+
+@app.post("/api/nmpc/toggle")
+async def toggle_nmpc(cmd: Optional[NmpcToggleCommand] = None) -> dict:
+    """Enables or disables NMPC closed-loop cooling valve control."""
+    if cmd is not None:
+        twin.enable_nmpc(
+            enabled=cmd.enabled,
+            temp_setpoint_c=cmd.temp_setpoint_c,
+            ca_setpoint=cmd.ca_setpoint,
+        )
+    else:
+        twin.enable_nmpc(enabled=not twin.nmpc_enabled)
+
+    return {
+        "status": "success",
+        "nmpc_enabled": twin.nmpc_enabled,
+        "temp_setpoint_c": twin.nmpc.config.temp_setpoint_c,
+        "ca_setpoint": twin.nmpc.config.ca_setpoint,
+    }
+
+
+@app.post("/api/nmpc/setpoint")
+async def set_nmpc_setpoints(cmd: NmpcSetpointsCommand) -> dict:
+    """Updates NMPC target reactor temperature (°C) and/or concentration setpoints."""
+    twin.update_nmpc_setpoints(
+        temp_setpoint_c=cmd.temp_setpoint_c,
+        ca_setpoint=cmd.ca_setpoint,
+    )
+    return {
+        "status": "success",
+        "temp_setpoint_c": twin.nmpc.config.temp_setpoint_c,
+        "ca_setpoint": twin.nmpc.config.ca_setpoint,
     }
 
 

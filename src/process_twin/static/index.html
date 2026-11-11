@@ -308,6 +308,28 @@
         </div>
         <button class="btn-action" id="btnToggleBridge" style="font-size:0.72rem; padding:0.45rem; margin-top:0.4rem;" onclick="toggleBridge()">Streaming: ENABLED</button>
       </div>
+
+      <!-- Advanced NMPC Reactor Controller Panel -->
+      <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+          <h3 style="font-size:0.8rem; font-weight:700; color:var(--accent-blue); text-transform:uppercase;">
+            NMPC Reactor Controller
+          </h3>
+          <span id="nmpcStatusBadge" style="font-size:0.7rem; font-family:var(--font-mono); padding:0.15rem 0.45rem; border-radius:4px; background:#1e293b; color:#94a3b8; border:1px solid #334155;">
+            DISABLED
+          </span>
+        </div>
+        <div class="control-group" style="margin-bottom:0.5rem;">
+          <label>Target Temp SP <span class="val" id="lblNmpcSp">85.0 °C</span></label>
+          <input type="range" id="inpNmpcSp" min="50" max="110" step="0.5" value="85" />
+        </div>
+        <div style="font-size:0.72rem; font-family:var(--font-mono); color:var(--text-secondary); line-height:1.45; margin-bottom:0.5rem;">
+          <div>Opt Valve (u*): <span id="nmpcOptValve" style="color:#38bdf8; font-weight:600;">--</span></div>
+          <div>Solve Time: <span id="nmpcSolveTime" style="color:#34d399; font-weight:600;">--</span></div>
+          <div>Cost (J): <span id="nmpcCost" style="color:#f8fafc; font-weight:600;">--</span></div>
+        </div>
+        <button class="btn-action" id="btnToggleNmpc" style="font-size:0.72rem; padding:0.45rem;" onclick="toggleNmpc()">NMPC: ENABLE</button>
+      </div>
     </aside>
 
     <!-- Right Workspace -->
@@ -543,6 +565,54 @@
       if (frame.interlock_tripped) {
         els.inpCooling.value = 100;
         els.lblCoolingVal.textContent = '100.0%';
+      } else if (frame.nmpc_enabled && frame.cooling_valve_pct !== undefined) {
+        els.inpCooling.value = frame.cooling_valve_pct;
+        els.lblCoolingVal.textContent = `${frame.cooling_valve_pct.toFixed(1)}% (NMPC)`;
+      }
+
+      // Sync NMPC Controller panel
+      currentNmpcEnabled = !!frame.nmpc_enabled;
+      const nmpcBadge = document.getElementById('nmpcStatusBadge');
+      const btnNmpc = document.getElementById('btnToggleNmpc');
+      const nmpcValve = document.getElementById('nmpcOptValve');
+      const nmpcTime = document.getElementById('nmpcSolveTime');
+      const nmpcCost = document.getElementById('nmpcCost');
+      const lblNmpcSp = document.getElementById('lblNmpcSp');
+
+      if (nmpcBadge) {
+        if (frame.nmpc_enabled) {
+          nmpcBadge.textContent = 'ACTIVE';
+          nmpcBadge.style.background = 'rgba(16,185,129,0.15)';
+          nmpcBadge.style.color = '#34d399';
+          nmpcBadge.style.borderColor = 'rgba(16,185,129,0.4)';
+          btnNmpc.textContent = 'NMPC: ACTIVE (Click to Disable)';
+          btnNmpc.style.borderColor = '#10b981';
+          btnNmpc.style.color = '#34d399';
+
+          if (frame.nmpc_optimal_cooling_pct !== null && frame.nmpc_optimal_cooling_pct !== undefined) {
+            nmpcValve.textContent = `${frame.nmpc_optimal_cooling_pct.toFixed(1)}%`;
+          }
+          if (frame.nmpc_solve_time_ms !== null && frame.nmpc_solve_time_ms !== undefined) {
+            nmpcTime.textContent = `${frame.nmpc_solve_time_ms.toFixed(1)} ms`;
+          }
+          if (frame.nmpc_cost !== null && frame.nmpc_cost !== undefined) {
+            nmpcCost.textContent = frame.nmpc_cost.toFixed(1);
+          }
+          if (frame.nmpc_target_temp_c !== null && frame.nmpc_target_temp_c !== undefined) {
+            lblNmpcSp.textContent = `${frame.nmpc_target_temp_c.toFixed(1)} °C`;
+          }
+        } else {
+          nmpcBadge.textContent = 'DISABLED';
+          nmpcBadge.style.background = '#1e293b';
+          nmpcBadge.style.color = '#94a3b8';
+          nmpcBadge.style.borderColor = '#334155';
+          btnNmpc.textContent = 'NMPC: ENABLE';
+          btnNmpc.style.borderColor = 'var(--border)';
+          btnNmpc.style.color = 'var(--text-primary)';
+          nmpcValve.textContent = '--';
+          nmpcTime.textContent = '--';
+          nmpcCost.textContent = '--';
+        }
       }
 
       // Sync active speed button
@@ -816,6 +886,38 @@
         alert('No active batch to complete or error occurred.');
       }
     };
+
+    let currentNmpcEnabled = false;
+
+    window.toggleNmpc = async function() {
+      const spInput = document.getElementById('inpNmpcSp');
+      const sp = spInput ? parseFloat(spInput.value) : 85.0;
+      try {
+        const res = await fetch('/api/nmpc/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !currentNmpcEnabled, temp_setpoint_c: sp })
+        });
+        const data = await res.json();
+        currentNmpcEnabled = data.nmpc_enabled;
+      } catch (e) {
+        console.warn('Failed to toggle NMPC:', e);
+      }
+    };
+
+    const inpNmpcSp = document.getElementById('inpNmpcSp');
+    if (inpNmpcSp) {
+      inpNmpcSp.addEventListener('input', e => {
+        const val = parseFloat(e.target.value);
+        const lbl = document.getElementById('lblNmpcSp');
+        if (lbl) lbl.textContent = `${val.toFixed(1)} °C`;
+        fetch('/api/nmpc/setpoint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ temp_setpoint_c: val })
+        }).catch(() => {});
+      });
+    }
 
     initHistory();
     connectWebSocket();

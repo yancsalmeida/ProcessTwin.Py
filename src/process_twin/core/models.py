@@ -41,6 +41,12 @@ class PlantTelemetry(BaseModel):
     estimated_reaction_rate: Optional[float] = Field(default=None, description="Estimated instantaneous reaction rate from EKF")
     ekf_temp_residual_c: Optional[float] = Field(default=None, description="EKF temperature innovation residual y - y_hat (°C)")
     ekf_nis: Optional[float] = Field(default=None, description="Normalized Innovation Squared for sensor drift/anomaly detection")
+    # Non-linear Model Predictive Control (NMPC) fields
+    nmpc_enabled: bool = Field(default=False, description="Whether NMPC closed-loop control is actively modulating cooling valve")
+    nmpc_target_temp_c: Optional[float] = Field(default=None, description="Active NMPC reactor temperature setpoint (°C)")
+    nmpc_optimal_cooling_pct: Optional[float] = Field(default=None, description="Optimal cooling valve position computed by NMPC optimizer (%)")
+    nmpc_solve_time_ms: Optional[float] = Field(default=None, description="Execution time of NMPC optimizer in milliseconds")
+    nmpc_cost: Optional[float] = Field(default=None, description="Objective function cost value of optimal trajectory")
 
 
 class AlarmEvent(BaseModel):
@@ -61,3 +67,20 @@ class ActuatorCommand(BaseModel):
     target_feed_flow_m3_h: Optional[float] = Field(None, ge=0.0, le=60.0)
     target_discharge_flow_m3_h: Optional[float] = Field(None, ge=0.0, le=60.0)
     time_scale: Optional[float] = Field(None, ge=1.0, le=20.0)
+    nmpc_enabled: Optional[bool] = Field(None, description="Toggle NMPC closed-loop control")
+    nmpc_target_temp_c: Optional[float] = Field(None, ge=20.0, le=150.0, description="NMPC reactor temperature setpoint (°C)")
+    nmpc_target_ca: Optional[float] = Field(None, ge=0.01, le=2.0, description="NMPC reactant concentration setpoint (mol/L)")
+
+
+class NmpcToggleCommand(BaseModel):
+    """Command to enable or disable NMPC closed-loop control."""
+    enabled: bool = Field(..., description="Enable or disable NMPC closed-loop control")
+    temp_setpoint_c: Optional[float] = Field(None, ge=20.0, le=150.0, description="Optional target reactor temperature (°C)")
+    ca_setpoint: Optional[float] = Field(None, ge=0.01, le=2.0, description="Optional target concentration Ca (mol/L)")
+
+
+class NmpcSetpointsCommand(BaseModel):
+    """Command to update NMPC tracking setpoints."""
+    temp_setpoint_c: Optional[float] = Field(None, ge=20.0, le=150.0, description="Target reactor temperature (°C)")
+    ca_setpoint: Optional[float] = Field(None, ge=0.01, le=2.0, description="Optional target concentration Ca (mol/L)")
+

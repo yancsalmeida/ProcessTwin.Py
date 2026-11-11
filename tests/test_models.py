@@ -85,3 +85,25 @@ def test_alarm_event_creation():
     assert alarm.tag == "LT-101"
     assert alarm.acknowledged is False
     assert alarm.resolved is False
+
+
+def test_nmpc_models_validation():
+    from process_twin.core.models import NmpcToggleCommand, NmpcSetpointsCommand
+
+    toggle_cmd = NmpcToggleCommand(enabled=True, temp_setpoint_c=86.5)
+    assert toggle_cmd.enabled is True
+    assert toggle_cmd.temp_setpoint_c == 86.5
+    assert toggle_cmd.ca_setpoint is None
+
+    sp_cmd = NmpcSetpointsCommand(temp_setpoint_c=90.0, ca_setpoint=0.45)
+    assert sp_cmd.temp_setpoint_c == 90.0
+    assert sp_cmd.ca_setpoint == 0.45
+
+    # Out of range temperature (< 20 or > 150)
+    with pytest.raises(ValidationError):
+        NmpcSetpointsCommand(temp_setpoint_c=180.0)
+
+    # ActuatorCommand with NMPC fields
+    act_cmd = ActuatorCommand(nmpc_enabled=True, nmpc_target_temp_c=83.0)
+    assert act_cmd.nmpc_enabled is True
+    assert act_cmd.nmpc_target_temp_c == 83.0
