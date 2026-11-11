@@ -160,6 +160,29 @@ sequenceDiagram
     end
 ```
 
+### Telemetry Streaming Channels & Sensor Mapping:
+`ProcessTwin.Py` streams both physical transmitters and estimated/controlled variables into `IndustrialTelemetry.Engine`:
+| Transmitter Tag | Description | Engineering Unit | Source / Quality Rule |
+|---|---|---|---|
+| `TT-101` | Reactor core temperature | `Celsius` | Physical sensor (Quality: `Good`, `Uncertain`, `Bad` via EKF NIS) |
+| `PT-101` | Reactor vapor space pressure | `Bar` | Physical transmitter |
+| `LT-101` | Buffer surge tank level | `Meters` | Physical level transmitter |
+| `FT-101` | Inlet feed flow rate | `M3PerHour` | Physical flow transmitter |
+| `FT-102` | Outlet discharge flow rate | `M3PerHour` | Physical flow transmitter |
+| `TCV-101` | Cooling jacket control valve | `Percent` | Physical actuator feedback |
+| `TIT-101-EST` | Filtered temperature estimate | `Celsius` | Extended Kalman Filter (EKF state) |
+| `AT-101-EST` | Reactant concentration ($C_A$) | `MolPerLiter` | Extended Kalman Filter (EKF state) |
+| `X-101-EST` | Reaction conversion ($X_A$) | `Percent` | Extended Kalman Filter (derived state) |
+| `TCV-101-NMPC` | Optimal cooling valve position | `Percent` | Nonlinear MPC optimizer |
+| `TIC-101-SP` | Reactor temperature setpoint | `Celsius` | Nonlinear MPC supervisory setpoint |
+| `ESD-101` | Safety interlock trip signal | `Percent` | Safety Instrumented System (SIS) |
+
+### Ingestion Modes:
+Configured via environment variable `TELEMETRY_INGESTION_MODE` or constructor argument:
+- `transactional` (default): Synchronous transactional ingestion via `POST /api/telemetry/ingest`.
+- `channel`: Non-blocking, backpressure-protected in-memory channel via `POST /api/telemetry/ingest/channel`.
+- `wire`: Zero-allocation, high-throughput text protocol via `POST /api/telemetry/batch/{id}/ingest/wire?mode=Channel`.
+
 ### Bridge REST Endpoints in ProcessTwin:
 | Method | Endpoint | Description |
 |---|---|---|

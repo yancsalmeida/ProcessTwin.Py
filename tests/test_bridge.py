@@ -221,3 +221,173 @@ async def test_bridge_send_frame_channel_mode():
             assert bridge.measurements_ingested == 6
             assert "/api/telemetry/ingest/channel" in mock_post.call_args.args[0]
     await bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_bridge_send_frame_with_ekf_and_nmpc_tags():
+    bridge = IndustrialTelemetryBridge(engine_url="http://mock-net-engine:5100")
+    bridge.active_batch_id = "batch-ekf-1"
+    bridge.active_batch_code = "BATCH-EKF-TEST"
+    bridge.connected = True
+
+    frame = PlantTelemetry(
+        timestamp=datetime(2026, 11, 4, 12, 0, 0, tzinfo=timezone.utc),
+        tank_level_m=5.0,
+        tank_volume_m3=35.0,
+        feed_flow_m3_h=20.0,
+        discharge_flow_m3_h=20.0,
+        reactor_temp_c=88.5,
+        reactor_pressure_bar=2.34,
+        cooling_valve_pct=45.0,
+        feed_valve_open=True,
+        status=PlantStatus.NORMAL,
+        estimated_temp_c=88.42,
+        estimated_ca_mol_l=1.2345,
+        estimated_conversion_pct=75.31,
+        nmpc_optimal_cooling_pct=52.4,
+        nmpc_target_temp_c=88.0,
+        ekf_nis=1.2
+    )
+
+    ingest_resp = MagicMock(status_code=200, json=lambda: {"measurementsIngested": 11, "alertsTriggered": 0})
+    batch_get_resp = MagicMock(status_code=200, json=lambda: {"status": "InProgress", "code": "BATCH-EKF-TEST"})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=batch_get_resp):
+        with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock, return_value=ingest_resp) as mock_post:
+            res = await bridge.send_frame(frame)
+            assert res == {"measurementsIngested": 11, "alertsTriggered": 0}
+            assert bridge.frames_sent == 1
+            assert bridge.measurements_ingested == 11
+
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["batchId"] == "batch-ekf-1"
+            assert len(payload["measurements"]) == 11
+
+            measurements_by_tag = {m["sensorTag"]: m for m in payload["measurements"]}
+            
+            # Check EKF state estimation tags
+            assert "TIT-101-EST" in measurements_by_tag
+            assert measurements_by_tag["TIT-101-EST"]["value"] == 88.42
+            assert measurements_by_tag["TIT-101-EST"]["unit"] == "Celsius"
+            assert measurements_by_tag["TIT-101-EST"]["quality"] == "Good"
+
+            assert "AT-101-EST" in measurements_by_tag
+            assert measurements_by_tag["AT-101-EST"]["value"] == 1.2345
+            assert measurements_by_tag["AT-101-EST"]["unit"] == "MolPerLiter"
+            assert measurements_by_tag["AT-101-EST"]["quality"] == "Good"
+
+            assert "X-101-EST" in measurements_by_tag
+            assert measurements_by_tag["X-101-EST"]["value"] == 75.31
+            assert measurements_by_tag["X-101-EST"]["unit"] == "Percent"
+
+            # Check NMPC tags
+            assert "TCV-101-NMPC" in measurements_by_tag
+            assert measurements_by_tag["TCV-101-NMPC"]["value"] == 52.4
+            assert measurements_by_tag["TCV-101-NMPC"]["unit"] == "Percent"
+
+            assert "TIC-101-SP" in measurements_by_tag
+            assert measurements_by_tag["TIC-101-SP"]["value"] == 88.0
+            assert measurements_by_tag["TIC-101-SP"]["unit"] == "Celsius"
+    await bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_bridge_send_frame_ekf_nis_quality_degradation():
+    bridge = IndustrialTelemetryBridge(engine_url="http://mock-net-engine:5100")
+    bridge.active_batch_id = "batch-nis-1"
+    bridge.connected = True
+
+    base_kwargs = dict(
+        timestamp=datetime(2026, 11, 4, 12, 0, 0, tzinfo=timezone.utc),
+        tank_level_m=5.0,
+        tank_volume_m3=35.0,
+        feed_flow_m3_h=20.0,
+        discharge_flow_m3_h=20.0,
+        reactor_temp_c=95.0,
+        reactor_pressure_bar=2.8,
+        cooling_valve_pct=60.0,
+        feed_valve_open=True,
+        estimated_temp_c=89.0,
+        status=PlantStatus.NORMAL
+    )
+
+    batch_get_resp = MagicMock(status_code=200, json=lambda: {"status": "InProgress", "code": "BATCH-NIS-TEST"})
+    ingest_resp = MagicMock(status_code=200, json=lambda: {"measurementsIngested": 7, "alertsTriggered": 0})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=batch_get_resp):
+        with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock, return_value=ingest_resp) as mock_post:
+            # 1. Moderate drift: NIS = 5.2 (between 3.84 and 6.63) -> Uncertain
+            frame_uncertain = PlantTelemetry(**base_kwargs, ekf_nis=5.2)
+            await bridge.send_frame(frame_uncertain)
+            payload = mock_post.call_args.kwargs["json"]
+            measurements_by_tag = {m["sensorTag"]: m for m in payload["measurements"]}
+            assert measurements_by_tag["TT-101"]["quality"] == "Uncertain"
+            assert measurements_by_tag["TIT-101-EST"]["quality"] == "Uncertain"
+
+            # 2. Severe sensor failure/drift: NIS = 12.5 (> 6.63) -> Bad
+            frame_bad = PlantTelemetry(**base_kwargs, ekf_nis=12.5)
+            await bridge.send_frame(frame_bad)
+            payload = mock_post.call_args.kwargs["json"]
+            measurements_by_tag = {m["sensorTag"]: m for m in payload["measurements"]}
+            assert measurements_by_tag["TT-101"]["quality"] == "Bad"
+            assert measurements_by_tag["TIT-101-EST"]["quality"] == "Bad"
+    await bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_bridge_send_frame_wire_protocol_mode():
+    bridge = IndustrialTelemetryBridge(
+        engine_url="http://mock-net-engine:5100",
+        ingestion_mode="wire"
+    )
+    bridge.active_batch_id = "batch-wire-abc"
+    bridge.connected = True
+
+    frame = PlantTelemetry(
+        timestamp=datetime(2026, 11, 4, 12, 0, 0, tzinfo=timezone.utc),
+        tank_level_m=6.0,
+        tank_volume_m3=42.0,
+        feed_flow_m3_h=22.0,
+        discharge_flow_m3_h=22.0,
+        reactor_temp_c=87.5,
+        reactor_pressure_bar=2.1,
+        cooling_valve_pct=40.0,
+        feed_valve_open=True,
+        estimated_temp_c=87.4,
+        estimated_ca_mol_l=1.15,
+        ekf_nis=1.1,
+        status=PlantStatus.NORMAL
+    )
+
+    wire_resp = MagicMock(
+        status_code=202,
+        json=lambda: {
+            "totalLinesParsed": 8,
+            "validMeasurements": 8,
+            "skippedLines": 0,
+            "elapsedMilliseconds": 0.45,
+            "recordsPerSecond": 17777.0,
+            "ingestMode": "Channel",
+            "alertsTriggered": 0,
+            "channelQueueDepth": 8
+        }
+    )
+    batch_get_resp = MagicMock(status_code=200, json=lambda: {"status": "InProgress", "code": "BATCH-WIRE-TEST"})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=batch_get_resp):
+        with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock, return_value=wire_resp) as mock_post:
+            res = await bridge.send_frame(frame)
+            assert res["validMeasurements"] == 8
+            assert bridge.frames_sent == 1
+            assert bridge.measurements_ingested == 8
+
+            call_args = mock_post.call_args
+            assert "/api/telemetry/batch/batch-wire-abc/ingest/wire?mode=Channel" in call_args.args[0]
+            assert call_args.kwargs["headers"]["Content-Type"] == "text/plain"
+            content = call_args.kwargs["content"]
+            lines = content.split("\n")
+            assert len(lines) == 8
+            # Verify pipe format: Timestamp|SensorTag|Value|Unit|Quality
+            assert "TT-101|87.5|Celsius|Good" in lines[0]
+            assert "AT-101-EST|1.15|MolPerLiter|Good" in content
+    await bridge.close()

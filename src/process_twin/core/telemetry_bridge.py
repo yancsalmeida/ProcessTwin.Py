@@ -167,13 +167,25 @@ class IndustrialTelemetryBridge:
         client = self._get_client()
         ts_iso = frame.timestamp.isoformat()
 
+        # Dynamic sensor quality evaluation from Extended Kalman Filter (EKF) NIS
+        # NIS follows chi-square distribution with 1 DOF (temperature residual).
+        # Normal bounds: NIS <= 3.84 (95% conf) -> Good
+        # Moderate deviation: 3.84 < NIS <= 6.63 (99% conf) -> Uncertain
+        # Severe anomaly/sensor drift/trip: NIS > 6.63 -> Bad
+        quality = "Good"
+        if frame.ekf_nis is not None:
+            if frame.ekf_nis > 6.63:
+                quality = "Bad"
+            elif frame.ekf_nis > 3.84:
+                quality = "Uncertain"
+
         measurements = [
             {
                 "timestampUtc": ts_iso,
                 "sensorTag": "TT-101",
                 "value": round(float(frame.reactor_temp_c), 2),
                 "unit": "Celsius",
-                "quality": "Good"
+                "quality": quality
             },
             {
                 "timestampUtc": ts_iso,
@@ -212,6 +224,86 @@ class IndustrialTelemetryBridge:
             }
         ]
 
+        # Extended Kalman Filter (EKF) Estimated States
+        if frame.estimated_temp_c is not None:
+            measurements.append({
+                "timestampUtc": ts_iso,
+                "sensorTag": "TIT-101-EST",
+                "value": round(float(frame.estimated_temp_c), 2),
+                "unit": "Celsius",
+                "quality": quality
+            })
+        if frame.estimated_ca_mol_l is not None:
+            measurements.append({
+                "timestampUtc": ts_iso,
+                "sensorTag": "AT-101-EST",
+                "value": round(float(frame.estimated_ca_mol_l), 4),
+                "unit": "MolPerLiter",
+                "quality": quality
+            })
+        if frame.estimated_conversion_pct is not None:
+            measurements.append({
+                "timestampUtc": ts_iso,
+                "sensorTag": "X-101-EST",
+                "value": round(float(frame.estimated_conversion_pct), 2),
+                "unit": "Percent",
+                "quality": quality
+            })
+
+        # Non-linear Model Predictive Control (NMPC) Outputs & Setpoints
+        if frame.nmpc_optimal_cooling_pct is not None:
+            measurements.append({
+                "timestampUtc": ts_iso,
+                "sensorTag": "TCV-101-NMPC",
+                "value": round(float(frame.nmpc_optimal_cooling_pct), 2),
+                "unit": "Percent",
+                "quality": "Good"
+            })
+        if frame.nmpc_target_temp_c is not None:
+            measurements.append({
+                "timestampUtc": ts_iso,
+                "sensorTag": "TIC-101-SP",
+                "value": round(float(frame.nmpc_target_temp_c), 2),
+                "unit": "Celsius",
+                "quality": "Good"
+            })
+
+        # High-performance wire protocol transmission
+        if self.ingestion_mode == "wire":
+            wire_lines = [
+                f"{m['timestampUtc']}|{m['sensorTag']}|{m['value']}|{m['unit']}|{m['quality']}"
+                for m in measurements
+            ]
+            wire_payload = "\n".join(wire_lines)
+            try:
+                resp = await client.post(
+                    f"{self.engine_url}/api/telemetry/batch/{batch_id}/ingest/wire?mode=Channel",
+                    content=wire_payload,
+                    headers={"Content-Type": "text/plain"}
+                )
+                if resp.status_code in (200, 202):
+                    result = resp.json()
+                    self.frames_sent += 1
+                    self.measurements_ingested += result.get(
+                        "validMeasurements",
+                        result.get("totalLinesParsed", len(measurements))
+                    )
+                    self.alerts_triggered += result.get("alertsTriggered", 0)
+                    self.last_sync_utc = datetime.now(timezone.utc).isoformat()
+                    self.connected = True
+                    self.last_error = None
+                    return result
+                elif resp.status_code == 400:
+                    self.last_error = f"Ingestion rejected (HTTP 400): {resp.text}"
+                    self.active_batch_id = None
+                    self.active_batch_code = None
+                else:
+                    self.last_error = f"Ingestion failed (HTTP {resp.status_code}): {resp.text}"
+            except Exception as e:
+                self.connected = False
+                self.last_error = f"Ingestion transport error: {str(e)}"
+            return None
+
         payload = {
             "batchId": batch_id,
             "measurements": measurements
@@ -230,7 +322,7 @@ class IndustrialTelemetryBridge:
                 self.frames_sent += 1
                 self.measurements_ingested += result.get(
                     "measurementsIngested",
-                    result.get("acceptedCount", len(measurements))
+                    result.get("acceptedCount", result.get("validMeasurements", len(measurements)))
                 )
                 self.alerts_triggered += result.get("alertsTriggered", 0)
                 self.last_sync_utc = datetime.now(timezone.utc).isoformat()
