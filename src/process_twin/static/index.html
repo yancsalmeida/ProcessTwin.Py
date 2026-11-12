@@ -279,6 +279,53 @@
       cursor: pointer;
     }
     .btn-ack:hover { color: var(--text-primary); border-color: var(--text-primary); }
+
+    /* Parallel CSTR Battery & Transport Styles */
+    .battery-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.65rem;
+      margin-top: 0.75rem;
+    }
+    @media (max-width: 1100px) {
+      .battery-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    .reactor-card {
+      background: #0d1322;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+    .reactor-card.runaway {
+      border-color: var(--accent-rose);
+      background: rgba(244, 63, 94, 0.12);
+      animation: pulse 1s infinite;
+    }
+    .reactor-card-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 700;
+      color: var(--accent-blue);
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      padding-bottom: 0.25rem;
+    }
+    .progress-bar-bg {
+      background: #1e293b;
+      height: 6px;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 2px;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      transition: width 0.3s ease;
+    }
   </style>
 </head>
 <body>
@@ -483,6 +530,52 @@
         </div>
       </div>
 
+      <!-- Rigorous Fluid Transport Properties (ChemFlow.NET / Chung & Ely-Hanley TRAPP) -->
+      <div class="kpi-grid" style="margin-top:-0.35rem;">
+        <div class="kpi-card">
+          <div class="lbl">Dynamic Viscosity (μ)</div>
+          <div class="num" id="kpiViscCp" style="color:var(--accent-blue);">-- cP</div>
+          <div class="sub-lbl"><span>Model:</span><span id="kpiTransportModel" style="color:var(--accent-emerald);">Chung et al.</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="lbl">Kinematic Viscosity (ν)</div>
+          <div class="num" id="kpiKinVisc" style="color:#38bdf8;">-- cSt</div>
+          <div class="sub-lbl"><span>Phase:</span><span id="kpiTransportPhase" style="color:#94a3b8;">SubcooledLiquid</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="lbl">Thermal Conductivity (λ)</div>
+          <div class="num" id="kpiThermCond" style="color:var(--accent-amber);">-- W/(m·K)</div>
+          <div class="sub-lbl"><span>Latini SI:</span><span style="color:#94a3b8;">Liquid State</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="lbl">Prandtl Number (Pr)</div>
+          <div class="num" id="kpiPrandtl" style="color:var(--accent-purple);">--</div>
+          <div class="sub-lbl"><span>Density (ρ):</span><span id="kpiDensity" style="color:#f8fafc; font-weight:600;">-- kg/m³</span></div>
+        </div>
+      </div>
+
+      <!-- Parallel CSTR Battery (SIMD AVX2/FMA Train) -->
+      <div class="panel">
+        <div class="panel-header">
+          <div style="display:flex; align-items:center; gap:0.6rem;">
+            <h2>Parallel CSTR Battery Telemetry</h2>
+            <span id="batterySimdBadge" class="nis-badge nis-GOOD">AVX2+FMA SIMD ACTIVE</span>
+            <span id="batteryRunawayBadge" class="nis-badge nis-GOOD">TRAIN SAFE</span>
+          </div>
+          <div style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-secondary); display:flex; gap:0.8rem; align-items:center;">
+            <span>Mean Conv: <strong id="batteryMeanConv" style="color:var(--accent-purple);">--%</strong></span>
+            <span>Mean Temp: <strong id="batteryMeanTemp" style="color:var(--accent-rose);">-- °C</strong></span>
+            <span>Duty: <strong id="batteryDuty" style="color:var(--accent-emerald);">-- kW</strong></span>
+            <button class="btn-ack" id="btnSimulateBattery" style="padding:0.2rem 0.5rem;" onclick="triggerBatterySim()">Simulate Now</button>
+          </div>
+        </div>
+        <div class="battery-grid" id="cstrBatteryContainer">
+          <div style="grid-column: 1 / -1; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.8rem; padding: 0.5rem; text-align: center;">
+            Awaiting battery telemetry stream...
+          </div>
+        </div>
+      </div>
+
       <!-- Real-Time Interactive Strip Chart (Chart.js) -->
       <div class="panel">
         <div class="panel-header">
@@ -565,6 +658,20 @@
       chartCanvas: document.getElementById('chartCanvas'),
       chartModeDesc: document.getElementById('chartModeDesc'),
       feedValveAlert: document.getElementById('feedValveAlert'),
+      kpiViscCp: document.getElementById('kpiViscCp'),
+      kpiKinVisc: document.getElementById('kpiKinVisc'),
+      kpiThermCond: document.getElementById('kpiThermCond'),
+      kpiPrandtl: document.getElementById('kpiPrandtl'),
+      kpiDensity: document.getElementById('kpiDensity'),
+      kpiTransportModel: document.getElementById('kpiTransportModel'),
+      kpiTransportPhase: document.getElementById('kpiTransportPhase'),
+      batterySimdBadge: document.getElementById('batterySimdBadge'),
+      batteryRunawayBadge: document.getElementById('batteryRunawayBadge'),
+      batteryMeanConv: document.getElementById('batteryMeanConv'),
+      batteryMeanTemp: document.getElementById('batteryMeanTemp'),
+      batteryDuty: document.getElementById('batteryDuty'),
+      btnSimulateBattery: document.getElementById('btnSimulateBattery'),
+      cstrBatteryContainer: document.getElementById('cstrBatteryContainer'),
     };
 
     let feedValveOpen = true;
@@ -1110,6 +1217,88 @@
         els.svgReactorBody.setAttribute('stroke', '#10b981');
       }
 
+      // Update Rigorous Fluid Transport Properties
+      if (frame.transport_properties) {
+        const tp = frame.transport_properties;
+        if (els.kpiViscCp) els.kpiViscCp.textContent = `${tp.dynamic_viscosity_cp.toFixed(3)} cP`;
+        if (els.kpiKinVisc) els.kpiKinVisc.textContent = `${tp.kinematic_viscosity_cst.toFixed(3)} cSt`;
+        if (els.kpiThermCond) els.kpiThermCond.textContent = `${tp.thermal_conductivity_w_m_k.toFixed(4)} W/(m·K)`;
+        if (els.kpiPrandtl) els.kpiPrandtl.textContent = tp.prandtl_number.toFixed(2);
+        if (els.kpiDensity) els.kpiDensity.textContent = `${tp.density_kg_m3.toFixed(1)} kg/m³`;
+        if (els.kpiTransportModel) els.kpiTransportModel.textContent = tp.model_name.includes('Chung') ? 'Chung (1988)' : 'TRAPP';
+        if (els.kpiTransportPhase) els.kpiTransportPhase.textContent = tp.phase;
+      }
+
+      // Update Parallel CSTR Battery Telemetry
+      if (frame.cstr_battery) {
+        const bat = frame.cstr_battery;
+        if (els.batteryMeanConv) els.batteryMeanConv.textContent = `${bat.mean_conversion_pct.toFixed(1)}%`;
+        if (els.batteryMeanTemp) els.batteryMeanTemp.textContent = `${bat.mean_temp_c.toFixed(1)} °C`;
+        if (els.batteryDuty) els.batteryDuty.textContent = `${bat.energy_duty_kw.toFixed(1)} kW`;
+
+        if (els.batteryRunawayBadge) {
+          if (bat.has_thermal_runaway) {
+            els.batteryRunawayBadge.className = 'nis-badge nis-BAD';
+            els.batteryRunawayBadge.textContent = 'RUNAWAY TRIP (SIS)';
+          } else {
+            els.batteryRunawayBadge.className = 'nis-badge nis-GOOD';
+            els.batteryRunawayBadge.textContent = 'TRAIN SAFE';
+          }
+        }
+
+        if (els.batterySimdBadge) {
+          if (bat.is_using_native_simd) {
+            els.batterySimdBadge.className = 'nis-badge nis-GOOD';
+            els.batterySimdBadge.textContent = 'AVX2+FMA SIMD ACTIVE';
+          } else {
+            els.batterySimdBadge.className = 'nis-badge nis-UNCERTAIN';
+            els.batterySimdBadge.textContent = 'SCALAR CORE ACTIVE';
+          }
+        }
+
+        // Render individual reactor states
+        if (els.cstrBatteryContainer && bat.reactor_states && bat.reactor_states.length > 0) {
+          els.cstrBatteryContainer.innerHTML = bat.reactor_states.map(s => {
+            const isRunaway = s.is_runaway || s.temp_c >= 126.85;
+            const tempPct = Math.min(100, Math.max(0, ((s.temp_c - 20) / (140 - 20)) * 100));
+            const convPct = Math.min(100, Math.max(0, s.conversion_pct));
+            const tempColor = isRunaway ? '#f43f5e' : (s.temp_c >= 105 ? '#f59e0b' : '#38bdf8');
+            return `
+              <div class="reactor-card ${isRunaway ? 'runaway' : ''}">
+                <div class="reactor-card-hdr">
+                  <span>R-0${s.reactor_index + 1}</span>
+                  <span style="font-size:0.65rem; color:${isRunaway ? '#fb7185' : '#34d399'};">
+                    ${isRunaway ? 'RUNAWAY' : 'NORMAL'}
+                  </span>
+                </div>
+                <div>
+                  <div style="display:flex; justify-content:space-between;">
+                    <span style="color:var(--text-secondary);">Temp:</span>
+                    <strong style="color:${tempColor};">${s.temp_c.toFixed(1)} °C</strong>
+                  </div>
+                  <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" style="width:${tempPct}%; background:${tempColor};"></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="display:flex; justify-content:space-between;">
+                    <span style="color:var(--text-secondary);">Conv (XA):</span>
+                    <strong style="color:var(--accent-purple);">${s.conversion_pct.toFixed(1)}%</strong>
+                  </div>
+                  <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" style="width:${convPct}%; background:var(--accent-purple);"></div>
+                  </div>
+                </div>
+                <div style="font-size:0.7rem; color:var(--text-secondary); display:flex; justify-content:space-between; margin-top:2px;">
+                  <span>Ca: <b style="color:#f8fafc;">${s.ca_mol_l.toFixed(2)} M</b></span>
+                  <span>μ: <b style="color:#38bdf8;">${s.dynamic_viscosity_cp.toFixed(2)} cP</b></span>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
       // Append to history buffer
       history.push(frame);
       if (history.length > maxPoints) history.shift();
@@ -1401,7 +1590,31 @@
           body: JSON.stringify({ temp_setpoint_c: val })
         }).catch(() => {});
       });
-    }
+    window.triggerBatterySim = async function() {
+      try {
+        if (els.btnSimulateBattery) els.btnSimulateBattery.textContent = 'Simulating...';
+        const res = await fetch('/api/battery/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reactor_count: 8,
+            total_feed_flow_mol_s: 100.0,
+            feed_temp_c: parseFloat(els.kpiTemp ? els.kpiTemp.textContent : '85.0') || 85.0,
+            package: 'Chung'
+          })
+        });
+        if (res.ok) {
+          const bat = await res.json();
+          if (history.length > 0) {
+            updatePlantUI({ ...history[history.length - 1], cstr_battery: bat });
+          }
+        }
+      } catch (e) {
+        console.warn('Battery simulation error:', e);
+      } finally {
+        if (els.btnSimulateBattery) els.btnSimulateBattery.textContent = 'Simulate Now';
+      }
+    };
 
     initChart();
     initHistory();

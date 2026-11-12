@@ -7,6 +7,8 @@ from process_twin.core.models import (
     AlarmEvent,
     ActuatorCommand,
     PlantStatus,
+    TransportProperties,
+    CstrBatteryTelemetry,
 )
 from process_twin.core.alarms import evaluate_safety_alarms
 from process_twin.core.ekf import CstrExtendedKalmanFilter, EkfEstimate
@@ -58,6 +60,8 @@ class PlantDigitalTwin:
         self.latest_phase: Optional[str] = "SubcooledLiquid"
         self.latest_thermo_model: Optional[str] = "Peng-Robinson EOS (1976)"
         self.latest_molar_enthalpy: Optional[float] = None
+        self.latest_transport: Optional[TransportProperties] = None
+        self.latest_battery: Optional[CstrBatteryTelemetry] = None
 
         # Extended Kalman Filter (EKF) for non-linear state & concentration estimation
         self.ekf = CstrExtendedKalmanFilter(
@@ -76,6 +80,11 @@ class PlantDigitalTwin:
         self.nmpc_enabled = False
         self.latest_nmpc: Optional[NmpcResult] = None
 
+    @property
+    def reactor_pressure_bar(self) -> float:
+        """Estimated base reactor pressure in bar."""
+        return round(1.013 + (self.reactor_temp_c - 85.0) * 0.05, 3)
+
     def update_thermodynamics(self, flash_data: Optional[dict]) -> None:
         """Updates real-fluid thermodynamic state resolved from ChemFlow.NET."""
         if not flash_data:
@@ -84,6 +93,14 @@ class PlantDigitalTwin:
         self.latest_phase = flash_data.get("phase")
         self.latest_thermo_model = flash_data.get("thermodynamicModel")
         self.latest_molar_enthalpy = flash_data.get("molarEnthalpyJPerMol")
+
+    def update_transport_properties(self, tp: Optional[TransportProperties]) -> None:
+        """Updates rigorous fluid transport properties resolved from ChemFlow.NET."""
+        self.latest_transport = tp
+
+    def update_cstr_battery(self, battery: Optional[CstrBatteryTelemetry]) -> None:
+        """Updates parallel CSTR battery simulation state resolved from ChemFlow.NET."""
+        self.latest_battery = battery
 
     def reset(self) -> None:
         """Resets the plant simulator back to its initial normal steady-state conditions."""
@@ -231,6 +248,8 @@ class PlantDigitalTwin:
             nmpc_solve_time_ms=self.latest_nmpc.solve_time_ms if (self.nmpc_enabled and self.latest_nmpc) else None,
             nmpc_cost=self.latest_nmpc.cost if (self.nmpc_enabled and self.latest_nmpc) else None,
             nmpc_predicted_temp_trajectory=self.latest_nmpc.predicted_temp_trajectory if (self.nmpc_enabled and self.latest_nmpc) else None,
+            transport_properties=self.latest_transport,
+            cstr_battery=self.latest_battery,
         )
 
         # Safety Interlock & Alarm Evaluation (SIS)

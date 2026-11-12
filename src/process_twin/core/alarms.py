@@ -15,6 +15,8 @@ class AlarmThresholds:
     TEMP_CRITICAL_TRIP = 135.0     # °C (Automatic interlock: flood cooling, shut feed)
     PRESSURE_HIGH_WARN = 4.0       # bar (Warning)
     PRESSURE_CRITICAL_TRIP = 5.5   # bar (Overpressure relief)
+    BATTERY_TEMP_HIGH_WARN = 105.0 # °C (Warning across battery)
+    BATTERY_TEMP_CRITICAL_TRIP = 126.85 # °C (400 K Runaway trip)
 
 
 def evaluate_safety_alarms(telemetry: PlantTelemetry) -> Tuple[PlantStatus, List[AlarmEvent], bool]:
@@ -83,6 +85,26 @@ def evaluate_safety_alarms(telemetry: PlantTelemetry) -> Tuple[PlantStatus, List
             tag="PT-103",
             message=f"High reactor pressure warning ({telemetry.reactor_pressure_bar:.2f} bar >= {AlarmThresholds.PRESSURE_HIGH_WARN} bar)",
         ))
+
+    # 4. CSTR Battery Transmitters (TT-BATTERY)
+    if telemetry.cstr_battery:
+        if telemetry.cstr_battery.has_thermal_runaway or telemetry.cstr_battery.mean_temp_c >= AlarmThresholds.BATTERY_TEMP_CRITICAL_TRIP:
+            has_critical = True
+            interlock_tripped = True
+            alarms.append(AlarmEvent(
+                id=str(uuid.uuid4())[:8],
+                severity=AlarmSeverity.CRITICAL,
+                tag="TT-BATTERY",
+                message=f"CRITICAL BATTERY RUNAWAY: Thermal runaway detected in parallel CSTR train (Mean T = {telemetry.cstr_battery.mean_temp_c:.1f} °C)!",
+            ))
+        elif telemetry.cstr_battery.mean_temp_c >= AlarmThresholds.BATTERY_TEMP_HIGH_WARN:
+            has_warning = True
+            alarms.append(AlarmEvent(
+                id=str(uuid.uuid4())[:8],
+                severity=AlarmSeverity.WARNING,
+                tag="TT-BATTERY",
+                message=f"High battery temperature warning ({telemetry.cstr_battery.mean_temp_c:.1f} °C >= {AlarmThresholds.BATTERY_TEMP_HIGH_WARN} °C)",
+            ))
 
     # Determine aggregated plant status
     if has_critical:

@@ -159,3 +159,58 @@ def test_telemetry_model_serialization_with_thermo():
     assert data["thermo_phase"] == "VaporLiquidEquilibrium"
     assert data["thermo_model"] == "Peng-Robinson EOS (1976)"
     assert data["molar_enthalpy_j_mol"] == 14200.5
+
+
+@pytest.mark.asyncio
+async def test_calculate_transport_properties_success(bridge: ChemFlowThermodynamicsBridge):
+    mock_tp = {
+        "dynamicViscosityCp": 0.452,
+        "kinematicViscosityCSt": 0.531,
+        "thermalConductivityWPerMK": 0.138,
+        "prandtlNumber": 6.2,
+        "densityKgPerM3": 851.0,
+        "phase": "SubcooledLiquid",
+        "modelName": "Chung et al. (1984/1988) Transport Model"
+    }
+
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: mock_tp)
+
+        tp = await bridge.calculate_transport_properties(temperature_c=85.0, pressure_bar=1.5)
+
+        assert tp.dynamic_viscosity_cp == 0.452
+        assert tp.kinematic_viscosity_cst == 0.531
+        assert tp.thermal_conductivity_w_m_k == 0.138
+        assert tp.prandtl_number == 6.2
+        assert tp.density_kg_m3 == 851.0
+        assert bridge.last_transport is not None
+        assert bridge.last_transport.dynamic_viscosity_cp == 0.452
+
+
+@pytest.mark.asyncio
+async def test_calculate_transport_properties_fallback(bridge: ChemFlowThermodynamicsBridge):
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = httpx.ConnectError("Connection refused")
+
+        tp = await bridge.calculate_transport_properties(temperature_c=85.0, pressure_bar=1.5)
+
+        assert "Fallback" in tp.model_name
+        assert 0.1 < tp.dynamic_viscosity_cp < 2.0
+        assert 0.05 < tp.thermal_conductivity_w_m_k < 0.5
+        assert tp.prandtl_number > 0.0
+        assert tp.density_kg_m3 > 700.0
+
+
+@pytest.mark.asyncio
+async def test_simulate_cstr_battery_fallback(bridge: ChemFlowThermodynamicsBridge):
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = httpx.ConnectError("Connection refused")
+
+        battery = await bridge.simulate_cstr_battery(reactor_count=8, feed_temp_c=76.85)
+
+        assert battery.reactor_count == 8
+        assert len(battery.reactor_states) == 8
+        assert battery.mean_conversion_pct >= 0.0
+        assert battery.mean_temp_c >= 70.0
+        assert bridge.last_battery is not None
+

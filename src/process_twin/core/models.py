@@ -16,6 +16,44 @@ class PlantStatus(str, Enum):
     CRITICAL_SHUTDOWN = "CRITICAL_SHUTDOWN"
 
 
+class TransportProperties(BaseModel):
+    """Rigorous fluid transport properties calculated via ChemFlow.NET (Chung or Ely-Hanley TRAPP)."""
+    dynamic_viscosity_cp: float = Field(..., description="Dynamic viscosity in centipoise (cP)")
+    kinematic_viscosity_cst: float = Field(..., description="Kinematic viscosity in centistokes (cSt)")
+    thermal_conductivity_w_m_k: float = Field(..., description="Thermal conductivity in W/(m·K)")
+    prandtl_number: float = Field(..., description="Dimensionless Prandtl number Pr")
+    density_kg_m3: float = Field(..., description="Fluid density in kg/m³")
+    phase: str = Field(default="SubcooledLiquid", description="Thermodynamic phase")
+    model_name: str = Field(default="Chung et al. (1984/1988)", description="Transport model name")
+
+
+class CstrBatteryReactorState(BaseModel):
+    """Telemetry state for an individual reactor in a multi-reactor parallel battery."""
+    reactor_index: int = Field(..., description="Zero-based index of reactor in battery")
+    ca_mol_l: float = Field(..., description="Reactant concentration (mol/L)")
+    temp_c: float = Field(..., description="Reactor temperature (°C)")
+    conversion_pct: float = Field(..., description="Reactant conversion percentage (%)")
+    reaction_rate_mol_l_min: float = Field(..., description="Instantaneous reaction rate (mol/(L·min))")
+    is_runaway: bool = Field(..., description="Thermal runaway threshold exceeded flag")
+    dynamic_viscosity_cp: float = Field(..., description="Dynamic viscosity in reactor (cP)")
+    thermal_conductivity_w_m_k: float = Field(..., description="Thermal conductivity in reactor (W/(m·K))")
+    prandtl_number: float = Field(..., description="Prandtl number in reactor")
+
+
+class CstrBatteryTelemetry(BaseModel):
+    """Aggregated telemetry for a train of parallel CSTR reactors computed via SIMD AVX2."""
+    battery_id: str = Field(default="CSTR-BATTERY-01")
+    name: str = Field(default="Parallel CSTR Battery")
+    reactor_count: int = Field(default=8)
+    mean_conversion_pct: float = Field(..., description="Average conversion across battery (%)")
+    mean_temp_c: float = Field(..., description="Mean effluent temperature (°C)")
+    mean_ca_mol_l: float = Field(..., description="Mean outlet reactant concentration (mol/L)")
+    has_thermal_runaway: bool = Field(..., description="True if any reactor exceeded safe temperature threshold")
+    is_using_native_simd: bool = Field(default=True, description="True if AVX2/FMA vector instructions were used")
+    energy_duty_kw: float = Field(default=0.0, description="Total battery heat exchange duty (kW)")
+    reactor_states: List[CstrBatteryReactorState] = Field(default_factory=list)
+
+
 class PlantTelemetry(BaseModel):
     """Represents a real-time snapshot frame from industrial plant transmitters."""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -34,6 +72,9 @@ class PlantTelemetry(BaseModel):
     thermo_phase: Optional[str] = Field(default=None, description="Equilibrium phase state from ChemFlow.NET")
     thermo_model: Optional[str] = Field(default=None, description="Thermodynamic model applied (e.g. Peng-Robinson EOS)")
     molar_enthalpy_j_mol: Optional[float] = Field(default=None, description="Fluid molar enthalpy departure in J/mol")
+    # Transport properties and CSTR Battery telemetry
+    transport_properties: Optional[TransportProperties] = Field(default=None, description="Rigorous fluid transport properties from ChemFlow.NET")
+    cstr_battery: Optional[CstrBatteryTelemetry] = Field(default=None, description="Parallel CSTR Battery simulation and state ensemble")
     # Extended Kalman Filter (EKF) state estimation fields
     estimated_ca_mol_l: Optional[float] = Field(default=None, description="Unmeasured reactant concentration Ca estimated via EKF")
     estimated_temp_c: Optional[float] = Field(default=None, description="Filtered temperature state from EKF")
@@ -84,4 +125,30 @@ class NmpcSetpointsCommand(BaseModel):
     """Command to update NMPC tracking setpoints."""
     temp_setpoint_c: Optional[float] = Field(None, ge=20.0, le=150.0, description="Target reactor temperature (°C)")
     ca_setpoint: Optional[float] = Field(None, ge=0.01, le=2.0, description="Optional target concentration Ca (mol/L)")
+
+
+class TransportCalculationRequest(BaseModel):
+    """Request payload to compute fluid transport properties via ChemFlow.NET."""
+    temperature_c: float = Field(default=85.0, description="Temperature (°C)")
+    pressure_bar: float = Field(default=1.5, description="Pressure (bar)")
+    compound_ids: Optional[List[str]] = Field(default=None, description="Compound IDs (e.g. ['C6H6', 'C7H8'])")
+    composition_z: Optional[List[float]] = Field(default=None, description="Mole fractions summing to 1.0")
+    package: str = Field(default="Chung", description="Transport package ('Chung' or 'ElyHanley')")
+
+
+class CstrBatterySimulationRequest(BaseModel):
+    """Request payload to simulate a parallel CSTR battery ensemble."""
+    reactor_count: int = Field(default=8, ge=1, le=64, description="Number of parallel CSTR reactors")
+    total_feed_flow_mol_s: float = Field(default=100.0, ge=1.0, description="Total feed molar flow rate (mol/s)")
+    feed_temp_c: float = Field(default=76.85, description="Feed temperature (°C)")
+    feed_pressure_bar: float = Field(default=1.5, description="Feed pressure (bar)")
+    reactant_id: str = Field(default="C6H6", description="Reactant compound identifier")
+    product_id: str = Field(default="C7H8", description="Product compound identifier")
+    composition_z: Optional[List[float]] = Field(default=None, description="Feed mole fractions [z_A, z_B]")
+    reactor_volume_l: float = Field(default=100.0, ge=1.0, description="Volume per reactor in Liters")
+    coolant_temp_c: float = Field(default=26.85, description="Cooling jacket inlet temperature (°C)")
+    cooling_ua_w_k: float = Field(default=666.67, ge=0.0, description="Overall heat transfer coefficient UA (W/K)")
+    max_safe_temp_c: float = Field(default=126.85, description="Maximum allowable temperature before runaway trip (°C)")
+    package: str = Field(default="Chung", description="Transport property package ('Chung' or 'ElyHanley')")
+
 

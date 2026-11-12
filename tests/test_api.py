@@ -88,3 +88,49 @@ def test_websocket_telemetry_stream():
         frame = twin.step(dt_seconds=0.2)
         # Verify websocket connection established
         assert ws is not None
+
+
+async def test_transport_endpoints(async_client):
+    # GET /api/transport/current
+    resp_curr = await async_client.get("/api/transport/current")
+    assert resp_curr.status_code == 200
+    data_curr = resp_curr.json()
+    assert "dynamic_viscosity_cp" in data_curr
+    assert "thermal_conductivity_w_m_k" in data_curr
+    assert "prandtl_number" in data_curr
+
+    # POST /api/transport/calculate
+    req_payload = {
+        "temperature_c": 90.0,
+        "pressure_bar": 2.0,
+        "package": "Chung"
+    }
+    resp_calc = await async_client.post("/api/transport/calculate", json=req_payload)
+    assert resp_calc.status_code == 200
+    data_calc = resp_calc.json()
+    assert data_calc["dynamic_viscosity_cp"] > 0.0
+    assert data_calc["thermal_conductivity_w_m_k"] > 0.0
+
+
+async def test_battery_endpoints(async_client):
+    # GET /api/battery/status
+    resp_status = await async_client.get("/api/battery/status")
+    assert resp_status.status_code == 200
+    data_status = resp_status.json()
+    assert "reactor_count" in data_status
+    assert "mean_conversion_pct" in data_status
+
+    # POST /api/battery/simulate
+    req_sim = {
+        "reactor_count": 8,
+        "total_feed_flow_mol_s": 120.0,
+        "feed_temp_c": 80.0,
+        "package": "Chung"
+    }
+    resp_sim = await async_client.post("/api/battery/simulate", json=req_sim)
+    assert resp_sim.status_code == 200
+    data_sim = resp_sim.json()
+    assert data_sim["reactor_count"] == 8
+    assert len(data_sim["reactor_states"]) == 8
+    assert data_sim["mean_conversion_pct"] >= 0.0
+

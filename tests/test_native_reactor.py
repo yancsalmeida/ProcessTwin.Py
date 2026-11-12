@@ -128,3 +128,63 @@ def test_graceful_fallback_when_binary_missing():
 
     traj = fallback_engine.simulate_trajectory(params, 1.0, 350.0, 0.005, 10)
     assert len(traj.times_min) == 11
+
+
+def test_simd_hardware_detection(native_engine: NativeReactorCore):
+    has_simd = native_engine.has_simd()
+    assert isinstance(has_simd, bool)
+
+
+def test_batch_rk4_parity(native_engine: NativeReactorCore):
+    params_list = [native_engine.get_default_params() for _ in range(4)]
+    ca_list = [1.0, 0.8, 0.6, 0.4]
+    temp_list = [350.0, 355.0, 360.0, 365.0]
+    dt = 0.005
+
+    ca_out_native, temp_out_native = native_engine.step_batch_rk4(params_list, ca_list, temp_list, dt)
+    ca_out_py, temp_out_py = NativeReactorCore._py_step_batch_rk4(params_list, ca_list, temp_list, dt)
+
+    assert len(ca_out_native) == 4
+    assert len(temp_out_native) == 4
+    for cn, cp in zip(ca_out_native, ca_out_py):
+        assert abs(cn - cp) < 1e-12
+    for tn, tp in zip(temp_out_native, temp_out_py):
+        assert abs(tn - tp) < 1e-12
+
+
+def test_batch_detailed_and_runaway(native_engine: NativeReactorCore):
+    params_list = [native_engine.get_default_params() for _ in range(4)]
+    # Make 4th reactor runaway
+    params_list[3] = NativeCstrParams(ua_j_per_min_k=0.0, t_feed_kelvin=390.0)
+    ca_list = [1.0, 0.8, 0.6, 0.5]
+    temp_list = [350.0, 355.0, 360.0, 396.0]
+    dt = 0.005
+
+    states = native_engine.step_batch_detailed(params_list, ca_list, temp_list, dt, runaway_threshold_k=395.0)
+    assert len(states) == 4
+    assert states[0].is_runaway is False
+    assert states[3].is_runaway is True
+    assert states[3].temp_kelvin >= 395.0
+
+
+def test_simulate_batch_trajectory_parity(native_engine: NativeReactorCore):
+    params_list = [native_engine.get_default_params() for _ in range(4)]
+    ca_list = [1.0, 0.8, 0.6, 0.4]
+    temp_list = [350.0, 355.0, 360.0, 365.0]
+    dt = 0.005
+    steps = 50
+
+    res_native = native_engine.simulate_batch_trajectory(params_list, ca_list, temp_list, dt, steps)
+    res_py = NativeReactorCore._py_simulate_batch_trajectory(params_list, ca_list, temp_list, dt, steps)
+
+    assert len(res_native.times_min) == steps + 1
+    assert len(res_native.ca_matrix) == steps + 1
+    assert len(res_native.temp_matrix) == steps + 1
+    assert len(res_native.ca_matrix[0]) == 4
+    assert len(res_native.temp_matrix[0]) == 4
+
+    for s in range(steps + 1):
+        for r in range(4):
+            assert abs(res_native.ca_matrix[s][r] - res_py.ca_matrix[s][r]) < 1e-10
+            assert abs(res_native.temp_matrix[s][r] - res_py.temp_matrix[s][r]) < 1e-10
+

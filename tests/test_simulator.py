@@ -130,3 +130,37 @@ def test_thermal_runaway_can_cool_down():
 
     # Temperature must decrease, proving no unphysical kinetic trapping
     assert frame.reactor_temp_c < initial_temp
+
+
+def test_transport_and_battery_telemetry_enrichment():
+    from process_twin.core.models import TransportProperties, CstrBatteryTelemetry
+
+    twin = PlantDigitalTwin()
+    tp = TransportProperties(
+        dynamic_viscosity_cp=0.45,
+        kinematic_viscosity_cst=0.55,
+        thermal_conductivity_w_m_k=0.14,
+        prandtl_number=6.1,
+        density_kg_m3=850.0,
+        phase="SubcooledLiquid",
+        model_name="Chung et al."
+    )
+    bat = CstrBatteryTelemetry(
+        battery_id="BAT-1",
+        name="Parallel Train",
+        reactor_count=8,
+        mean_conversion_pct=55.0,
+        mean_temp_c=88.5,
+        mean_ca_mol_l=0.45,
+        has_thermal_runaway=False,
+    )
+    twin.update_transport_properties(tp)
+    twin.update_cstr_battery(bat)
+
+    frame = twin.step(dt_seconds=0.0)
+    assert frame.transport_properties is not None
+    assert frame.transport_properties.dynamic_viscosity_cp == 0.45
+    assert frame.cstr_battery is not None
+    assert frame.cstr_battery.reactor_count == 8
+    assert frame.cstr_battery.mean_conversion_pct == 55.0
+

@@ -14,6 +14,10 @@ from process_twin.core.models import (
     AlarmEvent,
     NmpcToggleCommand,
     NmpcSetpointsCommand,
+    TransportProperties,
+    CstrBatteryTelemetry,
+    TransportCalculationRequest,
+    CstrBatterySimulationRequest,
 )
 from process_twin.core.simulator import PlantDigitalTwin
 from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge, BridgeStatus
@@ -51,13 +55,25 @@ async def telemetry_background_loop() -> None:
 
             # Persist to local database at 1 Hz (every 5 steps) or immediately upon alarm/interlock
             if step_count % 5 == 0 or frame.interlock_tripped:
-                # Query ChemFlow.NET real-fluid thermodynamics
+                # Query ChemFlow.NET real-fluid thermodynamics & transport
                 if chemflow_bridge.enabled:
                     flash_data = await chemflow_bridge.calculate_flash(
                         temperature_c=twin.reactor_temp_c,
                         pressure_bar=frame.reactor_pressure_bar
                     )
                     twin.update_thermodynamics(flash_data)
+
+                    tp_data = await chemflow_bridge.calculate_transport_properties(
+                        temperature_c=twin.reactor_temp_c,
+                        pressure_bar=frame.reactor_pressure_bar
+                    )
+                    twin.update_transport_properties(tp_data)
+
+                    battery_data = await chemflow_bridge.simulate_cstr_battery(
+                        feed_temp_c=twin.reactor_temp_c,
+                        feed_pressure_bar=frame.reactor_pressure_bar
+                    )
+                    twin.update_cstr_battery(battery_data)
 
                 await db.insert_telemetry(frame)
                 for alarm in twin.active_alarms:
@@ -298,6 +314,67 @@ async def get_thermo_status() -> ChemFlowStatus:
     """Returns the connectivity and health status of the ChemFlow.NET thermodynamics bridge."""
     await chemflow_bridge.check_health()
     return chemflow_bridge.get_status()
+
+
+# --- Transport Properties & CSTR Battery Endpoints ---
+
+@app.get("/api/transport/current", response_model=Optional[TransportProperties])
+async def get_current_transport_properties() -> Optional[TransportProperties]:
+    """Returns the latest calculated rigorous fluid transport properties."""
+    if twin.latest_transport is None:
+        tp = await chemflow_bridge.calculate_transport_properties(
+            temperature_c=twin.reactor_temp_c,
+            pressure_bar=twin.reactor_pressure_bar,
+        )
+        twin.update_transport_properties(tp)
+    return twin.latest_transport
+
+
+@app.post("/api/transport/calculate", response_model=TransportProperties)
+async def calculate_transport_properties(req: TransportCalculationRequest) -> TransportProperties:
+    """Calculates fluid transport properties for custom conditions via ChemFlow.NET (Chung or Ely-Hanley)."""
+    tp = await chemflow_bridge.calculate_transport_properties(
+        temperature_c=req.temperature_c,
+        pressure_bar=req.pressure_bar,
+        compound_ids=req.compound_ids,
+        composition_z=req.composition_z,
+        package=req.package,
+    )
+    twin.update_transport_properties(tp)
+    return tp
+
+
+@app.get("/api/battery/status", response_model=Optional[CstrBatteryTelemetry])
+async def get_cstr_battery_status() -> Optional[CstrBatteryTelemetry]:
+    """Returns the latest parallel CSTR battery simulation telemetry."""
+    if twin.latest_battery is None:
+        battery = await chemflow_bridge.simulate_cstr_battery(
+            feed_temp_c=twin.reactor_temp_c,
+            feed_pressure_bar=twin.reactor_pressure_bar,
+        )
+        twin.update_cstr_battery(battery)
+    return twin.latest_battery
+
+
+@app.post("/api/battery/simulate", response_model=CstrBatteryTelemetry)
+async def simulate_cstr_battery(req: CstrBatterySimulationRequest) -> CstrBatteryTelemetry:
+    """Executes a parallel CSTR battery simulation across N reactors using SIMD AVX2 acceleration."""
+    battery = await chemflow_bridge.simulate_cstr_battery(
+        reactor_count=req.reactor_count,
+        total_feed_flow_mol_s=req.total_feed_flow_mol_s,
+        feed_temp_c=req.feed_temp_c,
+        feed_pressure_bar=req.feed_pressure_bar,
+        reactant_id=req.reactant_id,
+        product_id=req.product_id,
+        composition_z=req.composition_z,
+        reactor_volume_l=req.reactor_volume_l,
+        coolant_temp_c=req.coolant_temp_c,
+        cooling_ua_w_k=req.cooling_ua_w_k,
+        max_safe_temp_c=req.max_safe_temp_c,
+        package=req.package,
+    )
+    twin.update_cstr_battery(battery)
+    return battery
 
 
 @app.websocket("/ws/telemetry")

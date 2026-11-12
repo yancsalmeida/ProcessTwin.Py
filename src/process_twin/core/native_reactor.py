@@ -13,7 +13,8 @@ import ctypes
 import math
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Sequence, Union
+
 
 
 class CstrParamsFFI(ctypes.Structure):
@@ -107,6 +108,13 @@ class TrajectoryResult:
     temp_kelvin: List[float]
 
 
+@dataclass
+class BatchTrajectoryResult:
+    times_min: List[float]
+    ca_matrix: List[List[float]]  # [step][reactor]
+    temp_matrix: List[List[float]]  # [step][reactor]
+
+
 def find_reactor_core_library() -> Optional[str]:
     """
     Searches for libreactorcore.so in standard project locations and environment paths.
@@ -196,6 +204,50 @@ class NativeReactorCore:
                 ctypes.POINTER(ctypes.c_double),
             ]
             lib.reactor_cstr_simulate_trajectory.restype = ctypes.c_int
+
+            # Bind: int reactor_core_has_simd(void)
+            if hasattr(lib, "reactor_core_has_simd"):
+                lib.reactor_core_has_simd.argtypes = []
+                lib.reactor_core_has_simd.restype = ctypes.c_int
+
+            # Bind: int reactor_cstr_batch_step_rk4(...)
+            if hasattr(lib, "reactor_cstr_batch_step_rk4"):
+                lib.reactor_cstr_batch_step_rk4.argtypes = [
+                    ctypes.POINTER(CstrParamsFFI),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.c_size_t,
+                    ctypes.c_double,
+                ]
+                lib.reactor_cstr_batch_step_rk4.restype = ctypes.c_int
+
+            # Bind: int reactor_cstr_batch_step_detailed(...)
+            if hasattr(lib, "reactor_cstr_batch_step_detailed"):
+                lib.reactor_cstr_batch_step_detailed.argtypes = [
+                    ctypes.POINTER(CstrParamsFFI),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.c_size_t,
+                    ctypes.c_double,
+                    ctypes.c_double,
+                    ctypes.POINTER(CstrStateFFI),
+                ]
+                lib.reactor_cstr_batch_step_detailed.restype = ctypes.c_int
+
+            # Bind: int reactor_cstr_batch_simulate_trajectory(...)
+            if hasattr(lib, "reactor_cstr_batch_simulate_trajectory"):
+                lib.reactor_cstr_batch_simulate_trajectory.argtypes = [
+                    ctypes.POINTER(CstrParamsFFI),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.c_size_t,
+                    ctypes.c_double,
+                    ctypes.c_size_t,
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                ]
+                lib.reactor_cstr_batch_simulate_trajectory.restype = ctypes.c_int
 
             self._lib = lib
         except Exception:
@@ -353,6 +405,161 @@ class NativeReactorCore:
             temp_kelvin=list(out_temp),
         )
 
+    def has_simd(self) -> bool:
+        """Returns True if the underlying C library was compiled with AVX2/FMA support."""
+        if not self._lib or not hasattr(self._lib, "reactor_core_has_simd"):
+            return False
+        return self._lib.reactor_core_has_simd() == 1
+
+    def step_batch_rk4(
+        self,
+        params: Union[NativeCstrParams, Sequence[NativeCstrParams]],
+        ca_list: List[float],
+        temp_k_list: List[float],
+        dt_min: float = 0.005,
+    ) -> Tuple[List[float], List[float]]:
+        """
+        Advances an ensemble of N CSTR reactors simultaneously using SIMD AVX2/FMA vectorization.
+        Returns: (new_ca_list, new_temp_k_list).
+        """
+        n = len(ca_list)
+        if n == 0 or len(temp_k_list) != n:
+            raise ValueError("Concentration and temperature lists must have equal non-zero length.")
+
+        if not self._lib or not hasattr(self._lib, "reactor_cstr_batch_step_rk4"):
+            return self._py_step_batch_rk4(params, ca_list, temp_k_list, dt_min)
+
+        p_obj = params[0] if isinstance(params, (list, tuple)) else params
+        ffi_p = p_obj.to_ffi()
+        array_type = ctypes.c_double * n
+        c_ca = array_type(*ca_list)
+        c_temp = array_type(*temp_k_list)
+
+        rc = self._lib.reactor_cstr_batch_step_rk4(
+            ctypes.byref(ffi_p),
+            c_ca,
+            c_temp,
+            ctypes.c_size_t(n),
+            ctypes.c_double(dt_min),
+        )
+        if rc != 0:
+            raise RuntimeError(f"reactor_cstr_batch_step_rk4 failed with error code {rc}")
+
+        return (list(c_ca), list(c_temp))
+
+    def step_batch_detailed(
+        self,
+        params: Union[NativeCstrParams, Sequence[NativeCstrParams]],
+        ca_list: List[float],
+        temp_k_list: List[float],
+        dt_min: float = 0.005,
+        runaway_threshold_k: float = 400.0,
+    ) -> List[NativeCstrState]:
+        """
+        Advances N reactors simultaneously and evaluates detailed conversion, reaction rate, and runaway status.
+        """
+        n = len(ca_list)
+        if n == 0 or len(temp_k_list) != n:
+            raise ValueError("Arrays must have matching non-zero dimensions.")
+
+        if not self._lib or not hasattr(self._lib, "reactor_cstr_batch_step_detailed"):
+            return self._py_step_batch_detailed(params, ca_list, temp_k_list, dt_min, runaway_threshold_k)
+
+        p_obj = params[0] if isinstance(params, (list, tuple)) else params
+        ffi_p = p_obj.to_ffi()
+        double_array_type = ctypes.c_double * n
+        c_ca = double_array_type(*ca_list)
+        c_temp = double_array_type(*temp_k_list)
+
+        state_array_type = CstrStateFFI * n
+        c_states = state_array_type()
+
+        rc = self._lib.reactor_cstr_batch_step_detailed(
+            ctypes.byref(ffi_p),
+            c_ca,
+            c_temp,
+            ctypes.c_size_t(n),
+            ctypes.c_double(dt_min),
+            ctypes.c_double(runaway_threshold_k),
+            c_states,
+        )
+        if rc != 0:
+            raise RuntimeError(f"reactor_cstr_batch_step_detailed failed with error code {rc}")
+
+        results: List[NativeCstrState] = []
+        for i in range(n):
+            s = c_states[i]
+            results.append(NativeCstrState(
+                ca_mol_per_l=s.ca_mol_per_l,
+                temp_kelvin=s.temp_kelvin,
+                conversion_pct=s.conversion_pct,
+                reaction_rate_mol_per_l_min=s.reaction_rate_mol_per_l_min,
+                is_runaway=s.is_runaway,
+            ))
+        return results
+
+    def simulate_batch_trajectory(
+        self,
+        params: Union[NativeCstrParams, Sequence[NativeCstrParams]],
+        ca0_list: List[float],
+        temp0_list: List[float],
+        dt_min: float,
+        steps: int,
+    ) -> BatchTrajectoryResult:
+        """
+        Simulates dynamic trajectories for N reactors in parallel entirely in native C (AVX2/FMA).
+        """
+        n = len(ca0_list)
+        if n == 0 or len(temp0_list) != n:
+            raise ValueError("Initial state arrays must have equal length.")
+
+        if not self._lib or not hasattr(self._lib, "reactor_cstr_batch_simulate_trajectory"):
+            return self._py_simulate_batch_trajectory(params, ca0_list, temp0_list, dt_min, steps)
+
+        p_obj = params[0] if isinstance(params, (list, tuple)) else params
+        ffi_p = p_obj.to_ffi()
+        total_steps = steps + 1
+
+        in_array_type = ctypes.c_double * n
+        c_ca0 = in_array_type(*ca0_list)
+        c_temp0 = in_array_type(*temp0_list)
+
+        time_array_type = ctypes.c_double * total_steps
+        out_time = time_array_type()
+
+        traj_array_type = ctypes.c_double * (total_steps * n)
+        out_ca = traj_array_type()
+        out_temp = traj_array_type()
+
+        rc = self._lib.reactor_cstr_batch_simulate_trajectory(
+            ctypes.byref(ffi_p),
+            c_ca0,
+            c_temp0,
+            ctypes.c_size_t(n),
+            ctypes.c_double(dt_min),
+            ctypes.c_size_t(steps),
+            out_time,
+            out_ca,
+            out_temp,
+        )
+        if rc != 0:
+            raise RuntimeError(f"reactor_cstr_batch_simulate_trajectory failed with code {rc}")
+
+        times = list(out_time)
+        ca_matrix: List[List[float]] = []
+        temp_matrix: List[List[float]] = []
+
+        for s in range(total_steps):
+            offset = s * n
+            ca_matrix.append(list(out_ca[offset:offset + n]))
+            temp_matrix.append(list(out_temp[offset:offset + n]))
+
+        return BatchTrajectoryResult(
+            times_min=times,
+            ca_matrix=ca_matrix,
+            temp_matrix=temp_matrix,
+        )
+
     # -------------------------------------------------------------------------
     # Pure Python Reference Implementation (for numerical parity validation)
     # -------------------------------------------------------------------------
@@ -434,3 +641,61 @@ class NativeReactorCore:
             temps.append(curr_temp)
 
         return TrajectoryResult(times_min=times, ca_mol_per_l=cas, temp_kelvin=temps)
+
+    @classmethod
+    def _py_step_batch_rk4(
+        cls, p: Union[NativeCstrParams, Sequence[NativeCstrParams]], ca_list: List[float], temp_list: List[float], dt: float
+    ) -> Tuple[List[float], List[float]]:
+        new_ca: List[float] = []
+        new_temp: List[float] = []
+        is_seq = isinstance(p, (list, tuple))
+        for i, (c, t) in enumerate(zip(ca_list, temp_list)):
+            p_i = p[i] if is_seq else p
+            c_next, t_next = cls._py_step_rk4(p_i, c, t, dt)
+            new_ca.append(c_next)
+            new_temp.append(t_next)
+        return (new_ca, new_temp)
+
+    @classmethod
+    def _py_step_batch_detailed(
+        cls, p: Union[NativeCstrParams, Sequence[NativeCstrParams]], ca_list: List[float], temp_list: List[float], dt: float, threshold_k: float
+    ) -> List[NativeCstrState]:
+        states: List[NativeCstrState] = []
+        is_seq = isinstance(p, (list, tuple))
+        for i, (c, t) in enumerate(zip(ca_list, temp_list)):
+            p_i = p[i] if is_seq else p
+            c_next, t_next = cls._py_step_rk4(p_i, c, t, dt)
+            if c_next < 0.0:
+                c_next = 0.0
+            conv = max(0.0, min(100.0, (1.0 - (c_next / p_i.ca_feed_mol_per_l)) * 100.0)) if p_i.ca_feed_mol_per_l > 0.0 else 0.0
+            rate = cls._py_reaction_rate(p_i, c_next, t_next)
+            states.append(NativeCstrState(
+                ca_mol_per_l=c_next,
+                temp_kelvin=t_next,
+                conversion_pct=conv,
+                reaction_rate_mol_per_l_min=rate,
+                is_runaway=t_next >= threshold_k,
+            ))
+        return states
+
+    @classmethod
+    def _py_simulate_batch_trajectory(
+        cls, p: Union[NativeCstrParams, Sequence[NativeCstrParams]], ca0_list: List[float], temp0_list: List[float], dt: float, steps: int
+    ) -> BatchTrajectoryResult:
+        times = [0.0]
+        ca_matrix = [[float(x) for x in ca0_list]]
+        temp_matrix = [[float(x) for x in temp0_list]]
+
+        curr_ca = list(ca0_list)
+        curr_temp = list(temp0_list)
+        curr_t = 0.0
+
+        for _ in range(steps):
+            curr_ca, curr_temp = cls._py_step_batch_rk4(p, curr_ca, curr_temp, dt)
+            curr_t += dt
+            times.append(curr_t)
+            ca_matrix.append(list(curr_ca))
+            temp_matrix.append(list(curr_temp))
+
+        return BatchTrajectoryResult(times_min=times, ca_matrix=ca_matrix, temp_matrix=temp_matrix)
+

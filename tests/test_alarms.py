@@ -88,3 +88,42 @@ def test_pressure_overpressure_alarms():
     assert len(alarms_c) == 1
     assert alarms_c[0].tag == "PT-103"
     assert alarms_c[0].severity == AlarmSeverity.CRITICAL
+
+
+def test_battery_temperature_warning_and_runaway():
+    from process_twin.core.models import CstrBatteryTelemetry
+
+    # 1. Warning when mean_temp_c >= 105.0
+    bat_warn = CstrBatteryTelemetry(
+        battery_id="BAT-01",
+        name="Battery Test",
+        reactor_count=4,
+        mean_conversion_pct=40.0,
+        mean_temp_c=110.0,
+        mean_ca_mol_l=0.4,
+        has_thermal_runaway=False,
+        is_using_native_simd=True,
+    )
+    tel_warn = create_baseline_telemetry(cstr_battery=bat_warn)
+    status_w, alarms_w, tripped_w = evaluate_safety_alarms(tel_warn)
+    assert status_w == PlantStatus.HIGH_ALARM
+    assert any(a.tag == "TT-BATTERY" and a.severity == AlarmSeverity.WARNING for a in alarms_w)
+    assert tripped_w is False
+
+    # 2. Critical Runaway when has_thermal_runaway is True
+    bat_crit = CstrBatteryTelemetry(
+        battery_id="BAT-01",
+        name="Battery Test",
+        reactor_count=4,
+        mean_conversion_pct=40.0,
+        mean_temp_c=130.0,
+        mean_ca_mol_l=0.1,
+        has_thermal_runaway=True,
+        is_using_native_simd=True,
+    )
+    tel_crit = create_baseline_telemetry(cstr_battery=bat_crit)
+    status_c, alarms_c, tripped_c = evaluate_safety_alarms(tel_crit)
+    assert status_c == PlantStatus.CRITICAL_SHUTDOWN
+    assert any(a.tag == "TT-BATTERY" and a.severity == AlarmSeverity.CRITICAL for a in alarms_c)
+    assert tripped_c is True
+
