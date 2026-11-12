@@ -18,10 +18,12 @@ from process_twin.core.models import (
     CstrBatteryTelemetry,
     TransportCalculationRequest,
     CstrBatterySimulationRequest,
+    IndustrialGatewayStatus,
 )
 from process_twin.core.simulator import PlantDigitalTwin
 from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge, BridgeStatus
 from process_twin.core.chemflow_bridge import ChemFlowThermodynamicsBridge, ChemFlowStatus
+from process_twin.industrial.gateway import IndustrialGateway
 from process_twin.db.storage import TelemetryDatabase
 
 # Global engine instances
@@ -30,6 +32,7 @@ db = TelemetryDatabase(DB_PATH)
 twin = PlantDigitalTwin()
 bridge = IndustrialTelemetryBridge()
 chemflow_bridge = ChemFlowThermodynamicsBridge()
+industrial_gateway = IndustrialGateway(twin_ref=twin)
 active_websockets: Set[WebSocket] = set()
 background_task: asyncio.Task = None
 
@@ -52,6 +55,10 @@ async def telemetry_background_loop() -> None:
                     except Exception:
                         disconnected.add(ws)
                 active_websockets.difference_update(disconnected)
+
+            # Synchronize industrial protocol tags (OPC UA & Modbus TCP)
+            await industrial_gateway.sync_telemetry(frame)
+            await industrial_gateway.check_client_writes()
 
             # Persist to local database at 1 Hz (every 5 steps) or immediately upon alarm/interlock
             if step_count % 5 == 0 or frame.interlock_tripped:
@@ -101,6 +108,7 @@ async def lifespan(app: FastAPI):
     # Check .NET IndustrialTelemetry.Engine & ChemFlow.NET connectivity on startup
     await bridge.check_health()
     await chemflow_bridge.check_health()
+    await industrial_gateway.start()
     background_task = asyncio.create_task(telemetry_background_loop())
     yield
     if background_task:
@@ -111,6 +119,8 @@ async def lifespan(app: FastAPI):
             pass
     await bridge.close()
     await chemflow_bridge.close()
+    await industrial_gateway.stop()
+
 
 
 app = FastAPI(
@@ -375,6 +385,54 @@ async def simulate_cstr_battery(req: CstrBatterySimulationRequest) -> CstrBatter
     )
     twin.update_cstr_battery(battery)
     return battery
+
+
+# --- Industrial Protocol Gateway Endpoints (OPC UA & Modbus TCP) ---
+
+@app.get("/api/industrial/status", response_model=IndustrialGatewayStatus)
+async def get_industrial_gateway_status() -> IndustrialGatewayStatus:
+    """Returns real-time connectivity, listening endpoints, and metrics for OPC UA and Modbus TCP servers."""
+    return industrial_gateway.get_status()
+
+
+@app.post("/api/industrial/opcua/start")
+async def start_opcua_server() -> dict:
+    """Starts the industrial OPC UA Server."""
+    industrial_gateway.opcua_enabled = True
+    await industrial_gateway.opcua_server.start()
+    return {
+        "status": "success",
+        "running": industrial_gateway.opcua_server.is_running,
+        "endpoint": industrial_gateway.opcua_endpoint,
+    }
+
+
+@app.post("/api/industrial/opcua/stop")
+async def stop_opcua_server() -> dict:
+    """Stops the industrial OPC UA Server."""
+    industrial_gateway.opcua_enabled = False
+    await industrial_gateway.opcua_server.stop()
+    return {"status": "success", "running": industrial_gateway.opcua_server.is_running}
+
+
+@app.post("/api/industrial/modbus/start")
+async def start_modbus_server() -> dict:
+    """Starts the industrial Modbus TCP Server."""
+    industrial_gateway.modbus_enabled = True
+    await industrial_gateway.modbus_server.start()
+    return {
+        "status": "success",
+        "running": industrial_gateway.modbus_server.is_running,
+        "port": industrial_gateway.modbus_port,
+    }
+
+
+@app.post("/api/industrial/modbus/stop")
+async def stop_modbus_server() -> dict:
+    """Stops the industrial Modbus TCP Server."""
+    industrial_gateway.modbus_enabled = False
+    await industrial_gateway.modbus_server.stop()
+    return {"status": "success", "running": industrial_gateway.modbus_server.is_running}
 
 
 @app.websocket("/ws/telemetry")

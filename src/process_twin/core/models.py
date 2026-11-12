@@ -152,3 +152,19 @@ class CstrBatterySimulationRequest(BaseModel):
     package: str = Field(default="Chung", description="Transport property package ('Chung' or 'ElyHanley')")
 
 
+class IndustrialGatewayStatus(BaseModel):
+    """Real-time operational status for industrial communication servers (OPC UA / Modbus TCP)."""
+    opcua_enabled: bool = True
+    opcua_running: bool = False
+    opcua_endpoint: str = "opc.tcp://0.0.0.0:4840/processtwin/server/"
+    opcua_tags_count: int = 0
+    modbus_enabled: bool = True
+    modbus_running: bool = False
+    modbus_host: str = "0.0.0.0"
+    modbus_port: int = 5020
+    modbus_requests_served: int = 0
+    modbus_writes_received: int = 0
+    last_sync_utc: Optional[str] = None
+
+
+

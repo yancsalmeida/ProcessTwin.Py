@@ -428,6 +428,27 @@
         </div>
         <button class="btn-action" id="btnToggleBridge" style="font-size:0.72rem; padding:0.45rem; margin-top:0.4rem;" onclick="toggleBridge()">Streaming: ENABLED</button>
       </div>
+
+      <!-- Industrial Fieldbus Gateway Panel (OPC UA & Modbus TCP) -->
+      <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+          <h3 style="font-size:0.8rem; font-weight:700; color:var(--accent-blue); text-transform:uppercase;">
+            Fieldbus Gateway (L2/PLC)
+          </h3>
+          <span id="industrialStatusBadge" style="font-size:0.7rem; font-family:var(--font-mono); padding:0.15rem 0.45rem; border-radius:4px; background:#1e293b; color:#94a3b8; border:1px solid #334155;">
+            Checking...
+          </span>
+        </div>
+        <div style="font-size:0.72rem; font-family:var(--font-mono); color:var(--text-secondary); line-height:1.45; margin-bottom:0.65rem;">
+          <div>OPC UA: <span id="opcuaBadge" style="color:#34d399; font-weight:600;">Port 4840</span> (<span id="opcuaTagCount">38</span> tags)</div>
+          <div>Modbus: <span id="modbusBadge" style="color:#38bdf8; font-weight:600;">Port 5020</span> (HR 0-20, Coils 0-5)</div>
+          <div>PLC Writes: <span id="modbusWritesCount" style="color:#fbbf24; font-weight:600;">0</span> synced</div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.4rem;">
+          <button class="btn-action" id="btnToggleOpcUa" style="font-size:0.72rem; padding:0.45rem;" onclick="toggleOpcUaServer()">OPC UA: ON</button>
+          <button class="btn-action" id="btnToggleModbus" style="font-size:0.72rem; padding:0.45rem;" onclick="toggleModbusServer()">Modbus: ON</button>
+        </div>
+      </div>
     </aside>
 
     <!-- Right Workspace -->
@@ -1616,12 +1637,77 @@
       }
     };
 
+    async function pollIndustrialGateway() {
+      try {
+        const res = await fetch('/api/industrial/status');
+        if (!res.ok) return;
+        const d = await res.json();
+        const badge = document.getElementById('industrialStatusBadge');
+        const opcBadge = document.getElementById('opcuaBadge');
+        const modBadge = document.getElementById('modbusBadge');
+        const tagCount = document.getElementById('opcuaTagCount');
+        const writesCount = document.getElementById('modbusWritesCount');
+        const btnOpc = document.getElementById('btnToggleOpcUa');
+        const btnMod = document.getElementById('btnToggleModbus');
+
+        if (badge) {
+          if (d.opcua_running && d.modbus_running) {
+            badge.textContent = 'DUAL STACK';
+            badge.style.background = 'rgba(16,185,129,0.15)';
+            badge.style.color = '#34d399';
+            badge.style.borderColor = 'rgba(16,185,129,0.4)';
+          } else if (d.opcua_running || d.modbus_running) {
+            badge.textContent = d.opcua_running ? 'OPC UA ONLY' : 'MODBUS ONLY';
+            badge.style.background = 'rgba(245,158,11,0.2)';
+            badge.style.color = '#fbbf24';
+            badge.style.borderColor = 'rgba(245,158,11,0.5)';
+          } else {
+            badge.textContent = 'OFFLINE';
+            badge.style.background = 'rgba(244,63,94,0.15)';
+            badge.style.color = '#fb7185';
+            badge.style.borderColor = 'rgba(244,63,94,0.4)';
+          }
+        }
+
+        if (opcBadge) {
+          opcBadge.textContent = d.opcua_running ? 'Port 4840' : 'OFFLINE';
+          opcBadge.style.color = d.opcua_running ? '#34d399' : '#94a3b8';
+        }
+        if (modBadge) {
+          modBadge.textContent = d.modbus_running ? `Port ${d.modbus_port}` : 'OFFLINE';
+          modBadge.style.color = d.modbus_running ? '#38bdf8' : '#94a3b8';
+        }
+        if (tagCount) tagCount.textContent = d.opcua_tags_count;
+        if (writesCount) writesCount.textContent = d.modbus_writes_received;
+        if (btnOpc) btnOpc.textContent = d.opcua_running ? 'OPC UA: ON' : 'OPC UA: OFF';
+        if (btnMod) btnMod.textContent = d.modbus_running ? 'Modbus: ON' : 'Modbus: OFF';
+      } catch (e) {}
+    }
+
+    window.toggleOpcUaServer = async function() {
+      const res = await fetch('/api/industrial/status');
+      const d = await res.json();
+      const endpoint = d.opcua_running ? '/api/industrial/opcua/stop' : '/api/industrial/opcua/start';
+      await fetch(endpoint, { method: 'POST' });
+      pollIndustrialGateway();
+    };
+
+    window.toggleModbusServer = async function() {
+      const res = await fetch('/api/industrial/status');
+      const d = await res.json();
+      const endpoint = d.modbus_running ? '/api/industrial/modbus/stop' : '/api/industrial/modbus/start';
+      await fetch(endpoint, { method: 'POST' });
+      pollIndustrialGateway();
+    };
+
     initChart();
     initHistory();
     connectWebSocket();
     setInterval(pollAlarms, 1000);
     setInterval(pollBridgeStatus, 1500);
+    setInterval(pollIndustrialGateway, 1500);
     pollBridgeStatus();
+    pollIndustrialGateway();
   </script>
 </body>
 </html>
