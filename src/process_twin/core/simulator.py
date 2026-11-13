@@ -62,6 +62,8 @@ class PlantDigitalTwin:
         self.latest_molar_enthalpy: Optional[float] = None
         self.latest_transport: Optional[TransportProperties] = None
         self.latest_battery: Optional[CstrBatteryTelemetry] = None
+        self.latest_series_parallel_plant: Optional[dict] = None
+        self.latest_series_parallel_profile: Optional[dict] = None
 
         # Extended Kalman Filter (EKF) for non-linear state & concentration estimation
         self.ekf = CstrExtendedKalmanFilter(
@@ -101,6 +103,14 @@ class PlantDigitalTwin:
     def update_cstr_battery(self, battery: Optional[CstrBatteryTelemetry]) -> None:
         """Updates parallel CSTR battery simulation state resolved from ChemFlow.NET."""
         self.latest_battery = battery
+
+    def update_series_parallel_plant(self, plant_summary: Optional[dict]) -> None:
+        """Stores the latest closed-loop series-parallel recycle plant summary."""
+        self.latest_series_parallel_plant = plant_summary
+
+    def update_series_parallel_profile(self, profile: Optional[dict]) -> None:
+        """Stores the latest series-parallel nominal vs runaway thermal trajectory comparison."""
+        self.latest_series_parallel_profile = profile
 
     def reset(self) -> None:
         """Resets the plant simulator back to its initial normal steady-state conditions."""

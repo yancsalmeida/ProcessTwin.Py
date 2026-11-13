@@ -152,6 +152,97 @@ class CstrBatterySimulationRequest(BaseModel):
     package: str = Field(default="Chung", description="Transport property package ('Chung' or 'ElyHanley')")
 
 
+class SeriesParallelRunawayPoint(BaseModel):
+    """Single transient snapshot of the 6-state Series-Parallel CSTR + cooling jacket."""
+
+    frame_index: int
+    time_seconds: float
+    ca_mol_per_l: float
+    cb_mol_per_l: float
+    cc_mol_per_l: float
+    cd_mol_per_l: float
+    temp_c: float
+    jacket_temp_c: float
+    conversion_a_pct: float
+    yield_b_pct: float
+    selectivity_b_pct: float
+    is_thermal_runaway: bool
+    status: str
+
+
+class SeriesParallelRunawayProfile(BaseModel):
+    """Side-by-side nominal selective vs thermal runaway excursion comparison."""
+
+    source: str
+    engine_mode: str
+    max_safe_temp_c: float
+    nominal_peak_temp_c: float
+    nominal_has_runaway: bool
+    runaway_peak_temp_c: float
+    runaway_triggered: bool
+    nominal_trajectory: List[SeriesParallelRunawayPoint]
+    runaway_trajectory: List[SeriesParallelRunawayPoint]
+
+
+class SeriesParallelRecyclePlantSummary(BaseModel):
+    """Closed-loop Series-Parallel CSTR + dual FUG distillation recycle plant KPIs."""
+
+    source: str
+    saved_simulation_run_id: Optional[int] = None
+    flowsheet_name: str
+    thermodynamic_model: str
+    has_recycle: bool = True
+    recycle_iterations: int
+    single_pass_conversion_a_pct: float
+    overall_plant_conversion_a_pct: float
+    yield_b_pct: float
+    selectivity_b_pct: float
+    reactor_temp_c: float
+    jacket_outlet_temp_c: float
+    outlet_ca_mol_per_l: float
+    outlet_cb_mol_per_l: float
+    outlet_cc_mol_per_l: float
+    outlet_cd_mol_per_l: float
+    heat_generated_watts: float
+    heat_removed_watts: float
+    is_thermal_runaway: bool
+    is_mass_conserved: bool = True
+    is_energy_conserved: bool = True
+    product_b_purity_mole_fraction: float
+    purified_benzene_flow_mol_per_s: float
+    is_using_native_core: bool
+
+
+class SeriesParallelPlantRequest(BaseModel):
+    """Request parameters for solving the closed-loop series-parallel recycle plant."""
+
+    fresh_feed_flow_mol_per_s: float = Field(default=12.0, ge=1.0, le=200.0)
+    fresh_feed_temp_c: float = Field(default=71.85, ge=7.0, le=175.0)
+    column_pressure_kpa: float = Field(default=150.0, ge=50.0, le=1000.0)
+    reactor_volume_liters: float = Field(default=110.0, ge=5.0, le=5000.0)
+    cooling_ua_w_per_k: float = Field(default=4000.0, ge=0.0, le=100000.0)
+    jacket_inlet_temp_c: float = Field(default=71.85, ge=-20.0, le=175.0)
+    max_safe_temp_c: float = Field(default=176.85, ge=80.0, le=350.0)
+    recycle_fraction: float = Field(default=0.85, ge=0.05, le=0.95)
+    use_high_exotherm_kinetics: bool = False
+
+
+class SeriesParallelRunawayRequest(BaseModel):
+    """Request parameters for Nominal vs Thermal Runaway comparison trajectory."""
+
+    volumetric_flow_l_per_min: float = Field(default=100.0, ge=1.0, le=1000.0)
+    reactor_volume_liters: float = Field(default=100.0, ge=1.0, le=5000.0)
+    feed_ca_mol_per_l: float = Field(default=1.0, ge=0.05, le=15.0)
+    nominal_feed_temp_c: float = Field(default=51.85, ge=0.0, le=250.0)
+    nominal_cooling_ua_w_per_k: float = Field(default=666.67, ge=0.0, le=50000.0)
+    runaway_feed_temp_c: float = Field(default=76.85, ge=0.0, le=300.0)
+    runaway_cooling_ua_w_per_k: float = Field(default=60.0, ge=0.0, le=50000.0)
+    jacket_inlet_temp_c: float = Field(default=21.85, ge=-30.0, le=200.0)
+    max_safe_temp_c: float = Field(default=146.85, ge=50.0, le=350.0)
+    time_step_min: float = Field(default=0.02, ge=0.001, le=0.25)
+    steps: int = Field(default=80, ge=10, le=1000)
+
+
 class IndustrialGatewayStatus(BaseModel):
     """Real-time operational status for industrial communication servers (OPC UA / Modbus TCP)."""
     opcua_enabled: bool = True

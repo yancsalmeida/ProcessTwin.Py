@@ -615,6 +615,44 @@
         </div>
       </div>
 
+      <!-- Series-Parallel Recycle Plant & Runaway Profiler -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Series-Parallel CSTR Recycle Plant &amp; Thermal Runaway (A&rarr;B&rarr;C, A&rarr;D + Jacket Tj)</h2>
+          <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+            <span id="spSourceBadge" class="nis-badge nis-GOOD">ChemFlow.NET / Native</span>
+            <span id="spRunawayBadge" class="nis-badge nis-GOOD">SELECTIVE NOMINAL</span>
+            <button class="btn-ack" id="btnSolveSpPlant" style="padding:0.2rem 0.55rem;" onclick="triggerSeriesParallelPlant()">Solve Recycle Plant</button>
+            <button class="btn-ack" id="btnProfileSpRunaway" style="padding:0.2rem 0.55rem; border-color:rgba(244,63,94,0.6); color:#fda4af;" onclick="triggerSeriesParallelRunaway()">Profile Runaway</button>
+          </div>
+        </div>
+        <div class="kpi-grid" style="margin-bottom:0.65rem;">
+          <div class="kpi-card">
+            <div class="lbl">Overall Plant Conv XA</div>
+            <div class="num" id="kpiSpConv" style="color:var(--accent-purple);">--%</div>
+            <div class="sub-lbl"><span>1-Pass CSTR:</span><span id="kpiSpConvSub">--%</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="lbl">Selectivity SB (B vs C+D)</div>
+            <div class="num" id="kpiSpSel" style="color:var(--accent-emerald);">--%</div>
+            <div class="sub-lbl"><span>Yield YB:</span><span id="kpiSpYieldSub">--%</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="lbl">C6H6 Product Purity</div>
+            <div class="num" id="kpiSpPurity" style="color:var(--accent-blue);">--%</div>
+            <div class="sub-lbl"><span>Flow:</span><span id="kpiSpFlowSub">-- mol/s</span></div>
+          </div>
+          <div class="kpi-card">
+            <div class="lbl">Reactor / Jacket Temp</div>
+            <div class="num" id="kpiSpTemp" style="color:var(--accent-rose);">-- °C</div>
+            <div class="sub-lbl"><span>Runaway Peak:</span><span id="kpiSpPeakSub">-- °C</span></div>
+          </div>
+        </div>
+        <div class="chart-container" style="height:210px;">
+          <canvas id="spRunawayCanvas"></canvas>
+        </div>
+      </div>
+
       <!-- Active Alarms Banner -->
       <div class="panel">
         <div class="panel-header">
@@ -693,6 +731,19 @@
       batteryDuty: document.getElementById('batteryDuty'),
       btnSimulateBattery: document.getElementById('btnSimulateBattery'),
       cstrBatteryContainer: document.getElementById('cstrBatteryContainer'),
+      spSourceBadge: document.getElementById('spSourceBadge'),
+      spRunawayBadge: document.getElementById('spRunawayBadge'),
+      btnSolveSpPlant: document.getElementById('btnSolveSpPlant'),
+      btnProfileSpRunaway: document.getElementById('btnProfileSpRunaway'),
+      kpiSpConv: document.getElementById('kpiSpConv'),
+      kpiSpConvSub: document.getElementById('kpiSpConvSub'),
+      kpiSpSel: document.getElementById('kpiSpSel'),
+      kpiSpYieldSub: document.getElementById('kpiSpYieldSub'),
+      kpiSpPurity: document.getElementById('kpiSpPurity'),
+      kpiSpFlowSub: document.getElementById('kpiSpFlowSub'),
+      kpiSpTemp: document.getElementById('kpiSpTemp'),
+      kpiSpPeakSub: document.getElementById('kpiSpPeakSub'),
+      spRunawayCanvas: document.getElementById('spRunawayCanvas'),
     };
 
     let feedValveOpen = true;
@@ -1702,7 +1753,176 @@
 
     initChart();
     initHistory();
+    let spChartInstance = null;
+
+    function renderSeriesParallelProfile(profile) {
+      if (!profile) return;
+      if (els.spSourceBadge) {
+        const isApi = (profile.source || '').includes('ChemFlow');
+        els.spSourceBadge.className = isApi ? 'nis-badge nis-GOOD' : 'nis-badge nis-UNCERTAIN';
+        els.spSourceBadge.textContent = profile.source || 'Native';
+      }
+      if (els.kpiSpPeakSub) {
+        els.kpiSpPeakSub.textContent = `Nom ${profile.nominal_peak_temp_c.toFixed(1)}°C / Run ${profile.runaway_peak_temp_c.toFixed(1)}°C`;
+      }
+      if (els.spRunawayBadge) {
+        if (profile.runaway_triggered) {
+          els.spRunawayBadge.className = 'nis-badge nis-BAD';
+          els.spRunawayBadge.textContent = `RUNAWAY > ${profile.max_safe_temp_c.toFixed(0)}°C VERIFIED`;
+        } else {
+          els.spRunawayBadge.className = 'nis-badge nis-GOOD';
+          els.spRunawayBadge.textContent = 'SELECTIVE NOMINAL';
+        }
+      }
+
+      if (!els.spRunawayCanvas || typeof Chart === 'undefined') return;
+      const nom = profile.nominal_trajectory || [];
+      const run = profile.runaway_trajectory || [];
+      const labels = nom.map(p => `${p.time_seconds.toFixed(0)}s`);
+      const tripLine = nom.map(() => profile.max_safe_temp_c);
+
+      if (spChartInstance) {
+        spChartInstance.destroy();
+        spChartInstance = null;
+      }
+
+      const ctx = els.spRunawayCanvas.getContext('2d');
+      spChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Nominal T (°C)',
+              data: nom.map(p => p.temp_c),
+              borderColor: '#10b981',
+              borderWidth: 2.2,
+              pointRadius: 0,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: 'Jacket Tj (°C)',
+              data: nom.map(p => p.jacket_temp_c),
+              borderColor: '#06b6d4',
+              borderDash: [4, 4],
+              borderWidth: 1.6,
+              pointRadius: 0,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: 'Runaway T (°C)',
+              data: run.map(p => p.temp_c),
+              borderColor: '#f43f5e',
+              backgroundColor: 'rgba(244, 63, 94, 0.1)',
+              borderWidth: 2.4,
+              pointRadius: 0,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: `Trip (${profile.max_safe_temp_c.toFixed(0)}°C)`,
+              data: tripLine,
+              borderColor: 'rgba(251, 113, 133, 0.75)',
+              borderDash: [6, 4],
+              borderWidth: 1.4,
+              pointRadius: 0,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: 'Nominal Product Cb (mol/L)',
+              data: nom.map(p => p.cb_mol_per_l),
+              borderColor: '#a855f7',
+              borderWidth: 1.8,
+              pointRadius: 0,
+              yAxisID: 'yConc'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: {
+              position: 'top',
+              labels: { boxWidth: 10, font: { family: "'JetBrains Mono', monospace", size: 9.5 }, color: '#94a3b8' }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(51, 65, 85, 0.3)' },
+              ticks: { color: '#64748b', font: { family: 'monospace', size: 9 }, maxTicksLimit: 10 }
+            },
+            yTemp: {
+              type: 'linear',
+              position: 'left',
+              grid: { color: 'rgba(51, 65, 85, 0.3)' },
+              ticks: { color: '#f43f5e', font: { family: 'monospace', size: 9.5 }, callback: v => `${v}°C` }
+            },
+            yConc: {
+              type: 'linear',
+              position: 'right',
+              min: 0,
+              grid: { drawOnChartArea: false },
+              ticks: { color: '#a855f7', font: { family: 'monospace', size: 9.5 }, callback: v => `${v.toFixed(2)}M` }
+            }
+          }
+        }
+      });
+    }
+
+    window.triggerSeriesParallelPlant = async function() {
+      if (els.btnSolveSpPlant) els.btnSolveSpPlant.textContent = 'Solving...';
+      try {
+        const res = await fetch('/api/series-parallel/plant', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (res.ok) {
+          const s = await res.json();
+          if (els.spSourceBadge) {
+            const isApi = (s.source || '').includes('ChemFlow');
+            els.spSourceBadge.className = isApi ? 'nis-badge nis-GOOD' : 'nis-badge nis-UNCERTAIN';
+            els.spSourceBadge.textContent = s.source || 'Native';
+          }
+          if (els.kpiSpConv) els.kpiSpConv.textContent = `${s.overall_plant_conversion_a_pct.toFixed(1)}%`;
+          if (els.kpiSpConvSub) els.kpiSpConvSub.textContent = `${s.single_pass_conversion_a_pct.toFixed(1)}% (${s.recycle_iterations} iters)`;
+          if (els.kpiSpSel) els.kpiSpSel.textContent = `${s.selectivity_b_pct.toFixed(1)}%`;
+          if (els.kpiSpYieldSub) els.kpiSpYieldSub.textContent = `${s.yield_b_pct.toFixed(1)}%`;
+          if (els.kpiSpPurity) els.kpiSpPurity.textContent = `${(s.product_b_purity_mole_fraction * 100).toFixed(1)}%`;
+          if (els.kpiSpFlowSub) els.kpiSpFlowSub.textContent = `${s.purified_benzene_flow_mol_per_s.toFixed(2)} mol/s`;
+          if (els.kpiSpTemp) els.kpiSpTemp.textContent = `${s.reactor_temp_c.toFixed(1)} / ${s.jacket_outlet_temp_c.toFixed(1)} °C`;
+        }
+      } catch (e) {
+        console.warn('Series-parallel plant solve failed:', e);
+      } finally {
+        if (els.btnSolveSpPlant) els.btnSolveSpPlant.textContent = 'Solve Recycle Plant';
+      }
+    };
+
+    window.triggerSeriesParallelRunaway = async function() {
+      if (els.btnProfileSpRunaway) els.btnProfileSpRunaway.textContent = 'Profiling...';
+      try {
+        const res = await fetch('/api/series-parallel/runaway-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (res.ok) {
+          const profile = await res.json();
+          renderSeriesParallelProfile(profile);
+        }
+      } catch (e) {
+        console.warn('Series-parallel runaway profile failed:', e);
+      } finally {
+        if (els.btnProfileSpRunaway) els.btnProfileSpRunaway.textContent = 'Profile Runaway';
+      }
+    };
+
     connectWebSocket();
+    triggerSeriesParallelPlant();
+    triggerSeriesParallelRunaway();
     setInterval(pollAlarms, 1000);
     setInterval(pollBridgeStatus, 1500);
     setInterval(pollIndustrialGateway, 1500);

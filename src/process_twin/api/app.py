@@ -18,6 +18,10 @@ from process_twin.core.models import (
     CstrBatteryTelemetry,
     TransportCalculationRequest,
     CstrBatterySimulationRequest,
+    SeriesParallelRunawayProfile,
+    SeriesParallelRecyclePlantSummary,
+    SeriesParallelPlantRequest,
+    SeriesParallelRunawayRequest,
     IndustrialGatewayStatus,
 )
 from process_twin.core.simulator import PlantDigitalTwin
@@ -385,6 +389,36 @@ async def simulate_cstr_battery(req: CstrBatterySimulationRequest) -> CstrBatter
     )
     twin.update_cstr_battery(battery)
     return battery
+
+
+@app.post("/api/series-parallel/plant", response_model=SeriesParallelRecyclePlantSummary)
+async def simulate_series_parallel_plant(
+    req: Optional[SeriesParallelPlantRequest] = None,
+) -> SeriesParallelRecyclePlantSummary:
+    """Solves the closed-loop series-parallel CSTR + dual FUG distillation recycle plant via ChemFlow.NET or native fallback."""
+    summary = await chemflow_bridge.simulate_series_parallel_plant(req)
+    twin.update_series_parallel_plant(summary.model_dump())
+    return summary
+
+
+@app.get("/api/series-parallel/plant/latest", response_model=SeriesParallelRecyclePlantSummary)
+async def get_latest_series_parallel_plant() -> SeriesParallelRecyclePlantSummary:
+    """Returns the latest cached series-parallel recycle plant summary, solving default plant on first access."""
+    if twin.latest_series_parallel_plant is None:
+        summary = await chemflow_bridge.simulate_series_parallel_plant()
+        twin.update_series_parallel_plant(summary.model_dump())
+        return summary
+    return SeriesParallelRecyclePlantSummary(**twin.latest_series_parallel_plant)
+
+
+@app.post("/api/series-parallel/runaway-profile", response_model=SeriesParallelRunawayProfile)
+async def simulate_series_parallel_runaway_profile(
+    req: Optional[SeriesParallelRunawayRequest] = None,
+) -> SeriesParallelRunawayProfile:
+    """Computes Nominal selective vs Thermal Runaway excursion trajectories for A -> B -> C / A -> D + Jacket Tj."""
+    profile = await chemflow_bridge.simulate_series_parallel_runaway_profile(req)
+    twin.update_series_parallel_profile(profile.model_dump())
+    return profile
 
 
 # --- Industrial Protocol Gateway Endpoints (OPC UA & Modbus TCP) ---

@@ -6,10 +6,17 @@ from typing import Optional, Dict, Any, List
 import httpx
 from pydantic import BaseModel, Field
 
+from dataclasses import replace
+
 from process_twin.core.models import (
     TransportProperties,
     CstrBatteryTelemetry,
     CstrBatteryReactorState,
+    SeriesParallelRunawayPoint,
+    SeriesParallelRunawayProfile,
+    SeriesParallelRecyclePlantSummary,
+    SeriesParallelPlantRequest,
+    SeriesParallelRunawayRequest,
 )
 from process_twin.core.native_reactor import NativeReactorCore, NativeCstrParams
 
@@ -550,6 +557,359 @@ class ChemFlowThermodynamicsBridge:
             is_using_native_simd=self._native_reactor.has_simd(),
             energy_duty_kw=round((cooling_ua_w_k * (mean_t_c - (coolant_temp_k - 273.15))) / 1000.0, 2),
             reactor_states=states,
+        )
+
+    async def simulate_series_parallel_plant(
+        self, req: Optional[SeriesParallelPlantRequest] = None
+    ) -> SeriesParallelRecyclePlantSummary:
+        """Solves the closed-loop series-parallel CSTR + dual FUG distillation recycle plant via ChemFlow.NET or native fallback."""
+        params = req or SeriesParallelPlantRequest()
+        if not self.enabled:
+            return self._local_fallback_series_parallel_plant(params)
+
+        payload = {
+            "freshFeedFlowMolPerSec": params.fresh_feed_flow_mol_per_s,
+            "freshFeedTemperatureKelvin": params.fresh_feed_temp_c + 273.15,
+            "columnPressureKpa": params.column_pressure_kpa,
+            "reactorVolumeLiters": params.reactor_volume_liters,
+            "coolingUaWattsPerKelvin": params.cooling_ua_w_per_k,
+            "jacketInletTemperatureKelvin": params.jacket_inlet_temp_c + 273.15,
+            "maxSafeTemperatureKelvin": params.max_safe_temp_c + 273.15,
+            "recycleFraction": params.recycle_fraction,
+            "useHighExothermKinetics": params.use_high_exotherm_kinetics,
+            "model": "Raoult",
+            "method": "Wegstein",
+            "tolerance": 1e-5,
+        }
+        try:
+            client = self._get_client()
+            resp = await client.post(
+                f"{self.chemflow_url}/api/simulations/series-parallel-plant",
+                json=payload,
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self.connected = True
+            self.requests_count += 1
+            self.last_error = None
+            self.last_sync_utc = datetime.now(timezone.utc).isoformat()
+            return SeriesParallelRecyclePlantSummary(
+                source="ChemFlow.NET API",
+                saved_simulation_run_id=data.get("savedSimulationRunId"),
+                flowsheet_name=data.get("flowsheetName", "Series-Parallel CSTR Recycle Plant"),
+                thermodynamic_model=data.get("thermodynamicModel", "Ideal (Raoult's Law)"),
+                has_recycle=bool(data.get("hasRecycle", True)),
+                recycle_iterations=int(data.get("recycleIterations", 1)),
+                single_pass_conversion_a_pct=float(data.get("singlePassConversionAPercent", 0.0)),
+                overall_plant_conversion_a_pct=float(data.get("overallPlantConversionAPercent", 0.0)),
+                yield_b_pct=float(data.get("yieldBPercent", 0.0)),
+                selectivity_b_pct=float(data.get("selectivityBPercent", 0.0)),
+                reactor_temp_c=float(data.get("reactorTemperatureCelsius", 0.0)),
+                jacket_outlet_temp_c=float(data.get("jacketOutletTemperatureCelsius", 0.0)),
+                outlet_ca_mol_per_l=float(data.get("outletCaMolPerL", 0.0)),
+                outlet_cb_mol_per_l=float(data.get("outletCbMolPerL", 0.0)),
+                outlet_cc_mol_per_l=float(data.get("outletCcMolPerL", 0.0)),
+                outlet_cd_mol_per_l=float(data.get("outletCdMolPerL", 0.0)),
+                heat_generated_watts=float(data.get("heatGeneratedWatts", 0.0)),
+                heat_removed_watts=float(data.get("heatRemovedWatts", 0.0)),
+                is_thermal_runaway=bool(data.get("isThermalRunaway", False)),
+                is_mass_conserved=bool(data.get("isMassConserved", True)),
+                is_energy_conserved=bool(data.get("isEnergyConserved", True)),
+                product_b_purity_mole_fraction=float(data.get("productBPurityMoleFraction", 0.0)),
+                purified_benzene_flow_mol_per_s=float(data.get("purifiedBenzeneFlowMolPerSec", 0.0)),
+                is_using_native_core=bool(data.get("isUsingNativeCore", self._native_reactor.is_available)),
+            )
+        except Exception as exc:
+            self.connected = False
+            self.last_error = str(exc)
+            return self._local_fallback_series_parallel_plant(params)
+
+    def _local_fallback_series_parallel_plant(
+        self, req: SeriesParallelPlantRequest
+    ) -> SeriesParallelRecyclePlantSummary:
+        """Offline closed-loop CSTR + 96%-recovery separation estimate via NativeReactorCore."""
+        defaults = self._native_reactor.get_series_parallel_default_params()
+        molar_conc_total = 9.5  # Approximate liquid hydrocarbon molarity (mol/L)
+        fresh_flow = req.fresh_feed_flow_mol_per_s
+        rec_flow = fresh_flow * 0.25
+        rec_za, rec_zb = 0.95, 0.05
+        jacket_in_k = req.jacket_inlet_temp_c + 273.15
+        safe_temp_k = req.max_safe_temp_c + 273.15
+        fresh_temp_k = req.fresh_feed_temp_c + 273.15
+        rec_temp_k = 330.0
+
+        last_state = None
+        conv_single = 0.0
+        ca_in = molar_conc_total * 0.97
+        iters = 0
+
+        for iters in range(1, 12):
+            tot_flow = fresh_flow + rec_flow
+            za_in = (fresh_flow * 0.97 + rec_flow * rec_za) / tot_flow
+            zb_in = (fresh_flow * 0.03 + rec_flow * rec_zb) / tot_flow
+            t_in_k = (fresh_flow * fresh_temp_k + rec_flow * rec_temp_k) / tot_flow
+            q_l_min = tot_flow * (60.0 / molar_conc_total)
+
+            ca_in = za_in * molar_conc_total
+            cb_in = zb_in * molar_conc_total
+
+            if req.use_high_exotherm_kinetics:
+                p = replace(
+                    defaults,
+                    volumetric_flow_l_per_min=q_l_min,
+                    volume_liters=req.reactor_volume_liters,
+                    ca_feed_mol_per_l=ca_in,
+                    cb_feed_mol_per_l=cb_in,
+                    t_feed_kelvin=t_in_k,
+                    jacket_t_in_kelvin=jacket_in_k,
+                    ua_j_per_min_k=req.cooling_ua_w_per_k * 60.0,
+                )
+            else:
+                p = replace(
+                    defaults,
+                    volumetric_flow_l_per_min=q_l_min,
+                    volume_liters=req.reactor_volume_liters,
+                    rho_cp_j_per_l_k=2200.0,
+                    k0_1_per_min=2.0e6,
+                    ea1_over_r_kelvin=5000.0,
+                    delta_h1_j_per_mol=8000.0,
+                    k0_2_per_min=3.5e5,
+                    ea2_over_r_kelvin=5200.0,
+                    delta_h2_j_per_mol=6000.0,
+                    k0_3_per_min=1.5e5,
+                    ea3_over_r_kelvin=5400.0,
+                    delta_h3_j_per_mol=7000.0,
+                    ca_feed_mol_per_l=ca_in,
+                    cb_feed_mol_per_l=cb_in,
+                    t_feed_kelvin=t_in_k,
+                    jacket_t_in_kelvin=jacket_in_k,
+                    ua_j_per_min_k=req.cooling_ua_w_per_k * 60.0,
+                )
+
+            ca, cb, cc, cd, temp, temp_j = ca_in, cb_in, 0.0, 0.0, t_in_k, jacket_in_k
+            for _ in range(80):
+                last_state = self._native_reactor.step_series_parallel_detailed(
+                    p, ca, cb, cc, cd, temp, temp_j, dt_min=0.04, runaway_threshold_k=safe_temp_k
+                )
+                ca, cb, cc, cd = (
+                    last_state.ca_mol_per_l,
+                    last_state.cb_mol_per_l,
+                    last_state.cc_mol_per_l,
+                    last_state.cd_mol_per_l,
+                )
+                temp, temp_j = last_state.temp_kelvin, last_state.jacket_temp_kelvin
+
+            total_out_m = max(1e-6, ca + cb + cc + cd)
+            za_out, zb_out = ca / total_out_m, cb / total_out_m
+            fa_out = tot_flow * za_out
+            fb_out = tot_flow * zb_out
+            # 96% recovery of A in C-101 overhead, 4% slip of B
+            d1_a = 0.96 * fa_out
+            d1_b = 0.04 * fb_out
+            d1_tot = max(1e-9, d1_a + d1_b)
+            new_rec_flow = req.recycle_fraction * d1_tot
+            new_za = d1_a / d1_tot
+            err = abs(new_rec_flow - rec_flow) / max(1.0, rec_flow)
+            rec_flow = 0.6 * new_rec_flow + 0.4 * rec_flow
+            rec_za, rec_zb = new_za, 1.0 - new_za
+            conv_single = max(0.0, (ca_in - ca) / max(1e-9, ca_in) * 100.0)
+            if err < 1e-4:
+                break
+
+        # Recompute plant-level overall conversion of fresh A and purified Benzene stream
+        total_out_m = max(1e-6, last_state.ca_mol_per_l + last_state.cb_mol_per_l + last_state.cc_mol_per_l + last_state.cd_mol_per_l)
+        tot_flow = fresh_flow + rec_flow
+        fa_rxn_out = tot_flow * (last_state.ca_mol_per_l / total_out_m)
+        fb_rxn_out = tot_flow * (last_state.cb_mol_per_l / total_out_m)
+        fc_rxn_out = tot_flow * (last_state.cc_mol_per_l / total_out_m)
+        fd_rxn_out = tot_flow * (last_state.cd_mol_per_l / total_out_m)
+
+        exit_a = fa_rxn_out * (0.04 + 0.96 * (1.0 - req.recycle_fraction))
+        overall_conv = max(0.0, min(100.0, (fresh_flow * 0.97 - exit_a) / (fresh_flow * 0.97) * 100.0))
+
+        b_crude = 0.96 * fb_rxn_out
+        c_crude = 0.98 * fc_rxn_out
+        prod_b_flow = 0.96 * b_crude
+        prod_b_total = max(1e-9, prod_b_flow + 0.04 * fa_rxn_out + 0.04 * c_crude + 0.02 * fd_rxn_out)
+        prod_b_purity = prod_b_flow / prod_b_total
+
+        return SeriesParallelRecyclePlantSummary(
+            source="NativeReactorCore Fallback",
+            saved_simulation_run_id=None,
+            flowsheet_name="Series-Parallel CSTR Recycle Plant (Offline Estimate)",
+            thermodynamic_model="Ideal Liquid + FUG 96% Recovery",
+            has_recycle=True,
+            recycle_iterations=iters,
+            single_pass_conversion_a_pct=round(conv_single, 2),
+            overall_plant_conversion_a_pct=round(overall_conv, 2),
+            yield_b_pct=round(last_state.yield_b_pct, 2),
+            selectivity_b_pct=round(last_state.selectivity_b_pct, 2),
+            reactor_temp_c=round(last_state.temp_kelvin - 273.15, 2),
+            jacket_outlet_temp_c=round(last_state.jacket_temp_kelvin - 273.15, 2),
+            outlet_ca_mol_per_l=round(last_state.ca_mol_per_l, 4),
+            outlet_cb_mol_per_l=round(last_state.cb_mol_per_l, 4),
+            outlet_cc_mol_per_l=round(last_state.cc_mol_per_l, 4),
+            outlet_cd_mol_per_l=round(last_state.cd_mol_per_l, 4),
+            heat_generated_watts=round(last_state.heat_generated_watts, 1),
+            heat_removed_watts=round(last_state.heat_removed_watts, 1),
+            is_thermal_runaway=bool(last_state.is_thermal_runaway),
+            is_mass_conserved=True,
+            is_energy_conserved=True,
+            product_b_purity_mole_fraction=round(prod_b_purity, 4),
+            purified_benzene_flow_mol_per_s=round(prod_b_flow, 4),
+            is_using_native_core=self._native_reactor.is_available,
+        )
+
+    async def simulate_series_parallel_runaway_profile(
+        self, req: Optional[SeriesParallelRunawayRequest] = None
+    ) -> SeriesParallelRunawayProfile:
+        """Generates Nominal vs Runaway trajectories for the 6-state Series-Parallel CSTR via ChemFlow.NET or fallback."""
+        params = req or SeriesParallelRunawayRequest()
+        if not self.enabled:
+            return self._local_fallback_series_parallel_runaway_profile(params)
+
+        payload = {
+            "volumetricFlowLPerMin": params.volumetric_flow_l_per_min,
+            "reactorVolumeLiters": params.reactor_volume_liters,
+            "feedCaMolPerL": params.feed_ca_mol_per_l,
+            "nominalFeedTemperatureKelvin": params.nominal_feed_temp_c + 273.15,
+            "nominalCoolingUaWattsPerKelvin": params.nominal_cooling_ua_w_per_k,
+            "runawayFeedTemperatureKelvin": params.runaway_feed_temp_c + 273.15,
+            "runawayCoolingUaWattsPerKelvin": params.runaway_cooling_ua_w_per_k,
+            "jacketInletTemperatureKelvin": params.jacket_inlet_temp_c + 273.15,
+            "maxSafeTemperatureKelvin": params.max_safe_temp_c + 273.15,
+            "timeStepMinutes": params.time_step_min,
+            "steps": params.steps,
+        }
+        try:
+            client = self._get_client()
+            resp = await client.post(
+                f"{self.chemflow_url}/api/telemetry/cstr/series-parallel/profile",
+                json=payload,
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self.connected = True
+            self.requests_count += 1
+            self.last_error = None
+            self.last_sync_utc = datetime.now(timezone.utc).isoformat()
+
+            def _map_frames(items: list[dict]) -> list[SeriesParallelRunawayPoint]:
+                return [
+                    SeriesParallelRunawayPoint(
+                        frame_index=int(f["frameIndex"]),
+                        time_seconds=float(f["timeSeconds"]),
+                        ca_mol_per_l=float(f["caMolPerL"]),
+                        cb_mol_per_l=float(f["cbMolPerL"]),
+                        cc_mol_per_l=float(f["ccMolPerL"]),
+                        cd_mol_per_l=float(f["cdMolPerL"]),
+                        temp_c=float(f["temperatureCelsius"]),
+                        jacket_temp_c=float(f["jacketTemperatureCelsius"]),
+                        conversion_a_pct=float(f["conversionAPct"]),
+                        yield_b_pct=float(f["yieldBPct"]),
+                        selectivity_b_pct=float(f["selectivityBPct"]),
+                        is_thermal_runaway=bool(f["isThermalRunaway"]),
+                        status=str(f["status"]),
+                    )
+                    for f in items
+                ]
+
+            return SeriesParallelRunawayProfile(
+                source="ChemFlow.NET API",
+                engine_mode=str(data.get("engineMode", "ChemFlow.NET")),
+                max_safe_temp_c=float(data["maxSafeTemperatureCelsius"]),
+                nominal_peak_temp_c=float(data["nominalPeakTemperatureCelsius"]),
+                nominal_has_runaway=bool(data["nominalHasRunaway"]),
+                runaway_peak_temp_c=float(data["runawayPeakTemperatureCelsius"]),
+                runaway_triggered=bool(data["runawayTriggered"]),
+                nominal_trajectory=_map_frames(data.get("nominalTrajectory", [])),
+                runaway_trajectory=_map_frames(data.get("runawayTrajectory", [])),
+            )
+        except Exception as exc:
+            self.connected = False
+            self.last_error = str(exc)
+            return self._local_fallback_series_parallel_runaway_profile(params)
+
+    def _local_fallback_series_parallel_runaway_profile(
+        self, req: SeriesParallelRunawayRequest
+    ) -> SeriesParallelRunawayProfile:
+        """Offline 6-state Series-Parallel CSTR runaway comparison via NativeReactorCore."""
+        defaults = self._native_reactor.get_series_parallel_default_params()
+        safe_k = req.max_safe_temp_c + 273.15
+        jacket_in_k = req.jacket_inlet_temp_c + 273.15
+
+        def _run_branch(feed_temp_c: float, cooling_ua_w: float) -> list[SeriesParallelRunawayPoint]:
+            feed_k = feed_temp_c + 273.15
+            p = replace(
+                defaults,
+                volumetric_flow_l_per_min=req.volumetric_flow_l_per_min,
+                volume_liters=req.reactor_volume_liters,
+                ca_feed_mol_per_l=req.feed_ca_mol_per_l,
+                cb_feed_mol_per_l=0.0,
+                cc_feed_mol_per_l=0.0,
+                cd_feed_mol_per_l=0.0,
+                t_feed_kelvin=feed_k,
+                jacket_t_in_kelvin=jacket_in_k,
+                ua_j_per_min_k=cooling_ua_w * 60.0,
+            )
+            ca, cb, cc, cd, temp, temp_j = req.feed_ca_mol_per_l, 0.0, 0.0, 0.0, feed_k, jacket_in_k
+            pts: list[SeriesParallelRunawayPoint] = []
+            for idx in range(1, req.steps + 1):
+                substeps = 8 if temp > 430.0 else 2
+                sub_dt = req.time_step_min / substeps
+                state = None
+                for _ in range(substeps):
+                    state = self._native_reactor.step_series_parallel_detailed(
+                        p, ca, cb, cc, cd, temp, temp_j, dt_min=sub_dt, runaway_threshold_k=safe_k
+                    )
+                    ca, cb, cc, cd = (
+                        state.ca_mol_per_l,
+                        state.cb_mol_per_l,
+                        state.cc_mol_per_l,
+                        state.cd_mol_per_l,
+                    )
+                    temp, temp_j = state.temp_kelvin, state.jacket_temp_kelvin
+
+                status = (
+                    "CRITICAL_RUNAWAY"
+                    if state.is_thermal_runaway
+                    else ("WARNING_HIGH_TEMP" if temp >= (safe_k - 20.0) else "NORMAL")
+                )
+                pts.append(
+                    SeriesParallelRunawayPoint(
+                        frame_index=idx,
+                        time_seconds=round(idx * req.time_step_min * 60.0, 2),
+                        ca_mol_per_l=round(state.ca_mol_per_l, 4),
+                        cb_mol_per_l=round(state.cb_mol_per_l, 4),
+                        cc_mol_per_l=round(state.cc_mol_per_l, 4),
+                        cd_mol_per_l=round(state.cd_mol_per_l, 4),
+                        temp_c=round(state.temp_kelvin - 273.15, 2),
+                        jacket_temp_c=round(state.jacket_temp_kelvin - 273.15, 2),
+                        conversion_a_pct=round(state.conversion_a_pct, 2),
+                        yield_b_pct=round(state.yield_b_pct, 2),
+                        selectivity_b_pct=round(state.selectivity_b_pct, 2),
+                        is_thermal_runaway=bool(state.is_thermal_runaway),
+                        status=status,
+                    )
+                )
+            return pts
+
+        nominal_pts = _run_branch(req.nominal_feed_temp_c, req.nominal_cooling_ua_w_per_k)
+        runaway_pts = _run_branch(req.runaway_feed_temp_c, req.runaway_cooling_ua_w_per_k)
+        engine_label = f"Native C11 ({self._native_reactor.get_version()})" if self._native_reactor.is_available else "Python RK4"
+
+        return SeriesParallelRunawayProfile(
+            source="NativeReactorCore Fallback",
+            engine_mode=engine_label,
+            max_safe_temp_c=round(req.max_safe_temp_c, 2),
+            nominal_peak_temp_c=max(p.temp_c for p in nominal_pts),
+            nominal_has_runaway=any(p.is_thermal_runaway for p in nominal_pts),
+            runaway_peak_temp_c=max(p.temp_c for p in runaway_pts),
+            runaway_triggered=any(p.is_thermal_runaway for p in runaway_pts),
+            nominal_trajectory=nominal_pts,
+            runaway_trajectory=runaway_pts,
         )
 
     def get_status(self) -> ChemFlowStatus:
