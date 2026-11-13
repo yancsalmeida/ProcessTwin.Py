@@ -15,6 +15,10 @@ from process_twin.core.native_reactor import (
     NativeCstrParams,
     NativeCstrState,
     TrajectoryResult,
+    NativeCstrSeriesParallelParams,
+    NativeCstrSeriesParallelState,
+    SeriesParallelTrajectoryResult,
+    SeriesParallelBatchTrajectoryResult,
 )
 
 
@@ -187,4 +191,148 @@ def test_simulate_batch_trajectory_parity(native_engine: NativeReactorCore):
         for r in range(4):
             assert abs(res_native.ca_matrix[s][r] - res_py.ca_matrix[s][r]) < 1e-10
             assert abs(res_native.temp_matrix[s][r] - res_py.temp_matrix[s][r]) < 1e-10
+
+
+def test_series_parallel_default_parameters_and_simd_level(native_engine: NativeReactorCore):
+    simd_level = native_engine.get_simd_level()
+    assert simd_level in (0, 256, 512)
+
+    params = native_engine.get_series_parallel_default_params()
+    assert params.volume_liters == 100.0
+    assert params.volumetric_flow_l_per_min == 100.0
+    assert params.k0_1_per_min == 7.08e10
+    assert params.k0_2_per_min == 3.50e9
+    assert params.k0_3_per_min == 1.20e9
+    assert params.ca_feed_mol_per_l == 1.0
+    assert params.cb_feed_mol_per_l == 0.0
+    assert params.t_feed_kelvin == 350.0
+    assert params.jacket_volume_liters == 25.0
+    assert params.jacket_flow_l_per_min == 50.0
+    assert params.jacket_t_in_kelvin == 295.0
+
+
+def test_series_parallel_reaction_rates_parity(native_engine: NativeReactorCore):
+    params = native_engine.get_series_parallel_default_params()
+    r1_n, r2_n, r3_n = native_engine.series_parallel_rates(params, ca=1.0, cb=0.2, temp_k=350.0)
+    r1_p, r2_p, r3_p = NativeReactorCore._py_series_parallel_rates(params, ca=1.0, cb=0.2, temp_k=350.0)
+
+    assert abs(r1_n - r1_p) < 1e-14
+    assert abs(r2_n - r2_p) < 1e-14
+    assert abs(r3_n - r3_p) < 1e-14
+    assert r1_n > 0.0
+    assert r2_n > 0.0
+    assert r3_n > 0.0
+
+
+def test_series_parallel_single_step_rk4_parity(native_engine: NativeReactorCore):
+    params = native_engine.get_series_parallel_default_params()
+    ca, cb, cc, cd, temp, temp_j = 1.0, 0.0, 0.0, 0.0, 350.0, 295.0
+    dt = 0.005
+
+    # Step in C
+    n_ca, n_cb, n_cc, n_cd, n_temp, n_temp_j = native_engine.step_series_parallel_rk4(
+        params, ca, cb, cc, cd, temp, temp_j, dt
+    )
+
+    # Step in Python reference
+    p_ca, p_cb, p_cc, p_cd, p_temp, p_temp_j = NativeReactorCore._py_series_parallel_step_rk4(
+        params, ca, cb, cc, cd, temp, temp_j, dt
+    )
+
+    assert abs(n_ca - p_ca) < 1e-12
+    assert abs(n_cb - p_cb) < 1e-12
+    assert abs(n_cc - p_cc) < 1e-12
+    assert abs(n_cd - p_cd) < 1e-12
+    assert abs(n_temp - p_temp) < 1e-12
+    assert abs(n_temp_j - p_temp_j) < 1e-12
+
+    # Physical sanity
+    assert n_ca < 1.0, "Reactant A must be consumed"
+    assert n_cb > 0.0, "Product B must be formed"
+    assert n_temp > 350.0, "Exothermic reaction must increase reactor temperature"
+    assert n_temp_j > 295.0, "Cooling jacket must absorb heat from reactor"
+
+
+def test_series_parallel_step_detailed_and_runaway(native_engine: NativeReactorCore):
+    params = native_engine.get_series_parallel_default_params()
+    ca, cb, cc, cd, temp, temp_j = 1.0, 0.0, 0.0, 0.0, 350.0, 295.0
+    dt = 0.005
+
+    st = native_engine.step_series_parallel_detailed(
+        params, ca, cb, cc, cd, temp, temp_j, dt, runaway_threshold_k=400.0
+    )
+
+    assert st.conversion_a_pct > 0.0
+    assert st.yield_b_pct > 0.0
+    assert st.selectivity_b_pct > 0.0
+    assert st.heat_generated_watts > 0.0
+    assert st.heat_removed_watts > 0.0
+    assert st.is_thermal_runaway is False
+
+    # Simulate thermal runaway: low coolant flow, zero jacket cooling, hot feed
+    runaway_params = NativeCstrSeriesParallelParams(
+        ua_j_per_min_k=0.0,
+        jacket_flow_l_per_min=0.0,
+        t_feed_kelvin=395.0,
+    )
+    st_runaway = native_engine.step_series_parallel_detailed(
+        runaway_params, ca=0.8, cb=0.1, cc=0.05, cd=0.05, temp_k=402.0, temp_j_k=300.0, dt=dt, runaway_threshold_k=400.0
+    )
+    assert st_runaway.is_thermal_runaway is True
+    assert st_runaway.temp_kelvin >= 400.0
+
+
+def test_series_parallel_batch_rk4_parity(native_engine: NativeReactorCore):
+    params = native_engine.get_series_parallel_default_params()
+    n = 4
+    ca_list = [1.0, 0.8, 0.5, 0.2]
+    cb_list = [0.0, 0.1, 0.2, 0.3]
+    cc_list = [0.0, 0.02, 0.05, 0.1]
+    cd_list = [0.0, 0.01, 0.03, 0.05]
+    temp_list = [350.0, 355.0, 360.0, 365.0]
+    temp_j_list = [295.0, 298.0, 300.0, 305.0]
+    dt = 0.005
+
+    n_out = native_engine.step_series_parallel_batch_rk4(
+        params, ca_list, cb_list, cc_list, cd_list, temp_list, temp_j_list, dt
+    )
+    p_out = NativeReactorCore._py_series_parallel_step_batch_rk4(
+        params, ca_list, cb_list, cc_list, cd_list, temp_list, temp_j_list, dt
+    )
+
+    for i in range(6):
+        assert len(n_out[i]) == n
+        for val_n, val_p in zip(n_out[i], p_out[i]):
+            assert abs(val_n - val_p) < 1e-12
+
+
+def test_series_parallel_batch_trajectory_parity(native_engine: NativeReactorCore):
+    params = native_engine.get_series_parallel_default_params()
+    n = 4
+    ca_list = [1.0, 0.8, 0.6, 0.4]
+    cb_list = [0.0, 0.05, 0.1, 0.15]
+    cc_list = [0.0, 0.01, 0.02, 0.03]
+    cd_list = [0.0, 0.01, 0.02, 0.03]
+    temp_list = [350.0, 352.0, 355.0, 360.0]
+    temp_j_list = [295.0, 296.0, 298.0, 300.0]
+    dt = 0.005
+    steps = 40
+
+    res_n = native_engine.simulate_series_parallel_batch_trajectory(
+        params, ca_list, cb_list, cc_list, cd_list, temp_list, temp_j_list, dt, steps
+    )
+    res_p = NativeReactorCore._py_series_parallel_simulate_batch_trajectory(
+        params, ca_list, cb_list, cc_list, cd_list, temp_list, temp_j_list, dt, steps
+    )
+
+    assert len(res_n.times_min) == steps + 1
+    for s in range(steps + 1):
+        for r in range(n):
+            assert abs(res_n.ca_matrix[s][r] - res_p.ca_matrix[s][r]) < 1e-10
+            assert abs(res_n.cb_matrix[s][r] - res_p.cb_matrix[s][r]) < 1e-10
+            assert abs(res_n.cc_matrix[s][r] - res_p.cc_matrix[s][r]) < 1e-10
+            assert abs(res_n.cd_matrix[s][r] - res_p.cd_matrix[s][r]) < 1e-10
+            assert abs(res_n.temp_matrix[s][r] - res_p.temp_matrix[s][r]) < 1e-10
+            assert abs(res_n.jacket_temp_matrix[s][r] - res_p.jacket_temp_matrix[s][r]) < 1e-10
+
 
