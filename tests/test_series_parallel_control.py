@@ -194,7 +194,7 @@ def test_twin_step_and_alarm_integration():
 
 @pytest.mark.asyncio
 async def test_telemetry_bridge_forwards_series_parallel_tags():
-    bridge = IndustrialTelemetryBridge(engine_url="http://localhost:5100", ingestion_mode="transactional")
+    bridge = IndustrialTelemetryBridge(engine_url="http://mock-net-engine:5100", ingestion_mode="transactional")
     bridge.active_batch_id = "batch-sp-001"
     bridge.active_batch_code = "BATCH-SP"
 
@@ -209,8 +209,12 @@ async def test_telemetry_bridge_forwards_series_parallel_tags():
             json=lambda: {"measurementsIngested": len(json["measurements"]), "alertsTriggered": 0},
         )
 
-    with patch.object(httpx.AsyncClient, "post", side_effect=fake_post):
-        res = await bridge.send_frame(frame)
+    try:
+        with patch.object(bridge, "ensure_active_batch", new_callable=AsyncMock, return_value="batch-sp-001"):
+            with patch.object(httpx.AsyncClient, "post", side_effect=fake_post):
+                res = await bridge.send_frame(frame)
+    finally:
+        await bridge.close()
 
     assert res is not None
     tags = {m["sensorTag"]: m for m in captured["json"]["measurements"]}
