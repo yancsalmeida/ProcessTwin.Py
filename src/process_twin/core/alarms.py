@@ -106,6 +106,23 @@ def evaluate_safety_alarms(telemetry: PlantTelemetry) -> Tuple[PlantStatus, List
                 message=f"High battery temperature warning ({telemetry.cstr_battery.mean_temp_c:.1f} °C >= {AlarmThresholds.BATTERY_TEMP_HIGH_WARN} °C)",
             ))
 
+    # 5. 6-State Series-Parallel CSTR Thermal Runaway (SP-TT-201)
+    if telemetry.sp_control and (
+        telemetry.sp_control.is_thermal_runaway
+        or telemetry.sp_control.reactor_temp_c >= telemetry.sp_control.max_safe_temp_c
+    ):
+        has_critical = True
+        interlock_tripped = True
+        alarms.append(AlarmEvent(
+            id=str(uuid.uuid4())[:8],
+            severity=AlarmSeverity.CRITICAL,
+            tag="SP-TT-201",
+            message=(
+                f"CRITICAL SERIES-PARALLEL RUNAWAY ({telemetry.sp_control.reactor_temp_c:.1f} °C "
+                f">= {telemetry.sp_control.max_safe_temp_c:.1f} °C): Flooding SP cooling jacket!"
+            ),
+        ))
+
     # Determine aggregated plant status
     if has_critical:
         status = PlantStatus.CRITICAL_SHUTDOWN

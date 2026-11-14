@@ -615,13 +615,16 @@
         </div>
       </div>
 
-      <!-- Series-Parallel Recycle Plant & Runaway Profiler -->
+      <!-- Series-Parallel Recycle Plant, 6-State EKF & Economic NMPC -->
       <div class="panel">
         <div class="panel-header">
-          <h2>Series-Parallel CSTR Recycle Plant &amp; Thermal Runaway (A&rarr;B&rarr;C, A&rarr;D + Jacket Tj)</h2>
+          <h2>Series-Parallel CSTR Recycle Plant &amp; 6-State EKF / Economic NMPC (A&rarr;B&rarr;C, A&rarr;D + Tj)</h2>
           <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
             <span id="spSourceBadge" class="nis-badge nis-GOOD">ChemFlow.NET / Native</span>
             <span id="spRunawayBadge" class="nis-badge nis-GOOD">SELECTIVE NOMINAL</span>
+            <span id="spEkfNisBadge" class="nis-badge nis-GOOD">EKF6 NIS: --</span>
+            <button class="btn-ack" id="btnToggleSpNmpc" style="padding:0.2rem 0.55rem; border-color:rgba(16,185,129,0.6); color:#6ee7b7;" onclick="toggleSeriesParallelNmpc()">Economic NMPC: OFF</button>
+            <button class="btn-ack" id="btnClosedLoopSp" style="padding:0.2rem 0.55rem; border-color:rgba(56,189,248,0.6); color:#7dd3fc;" onclick="triggerSeriesParallelClosedLoop()">Closed-Loop Disturbance</button>
             <button class="btn-ack" id="btnSolveSpPlant" style="padding:0.2rem 0.55rem;" onclick="triggerSeriesParallelPlant()">Solve Recycle Plant</button>
             <button class="btn-ack" id="btnProfileSpRunaway" style="padding:0.2rem 0.55rem; border-color:rgba(244,63,94,0.6); color:#fda4af;" onclick="triggerSeriesParallelRunaway()">Profile Runaway</button>
           </div>
@@ -638,17 +641,17 @@
             <div class="sub-lbl"><span>Yield YB:</span><span id="kpiSpYieldSub">--%</span></div>
           </div>
           <div class="kpi-card">
-            <div class="lbl">C6H6 Product Purity</div>
-            <div class="num" id="kpiSpPurity" style="color:var(--accent-blue);">--%</div>
-            <div class="sub-lbl"><span>Flow:</span><span id="kpiSpFlowSub">-- mol/s</span></div>
+            <div class="lbl">Live EKF6 Cb Est / True</div>
+            <div class="num" id="kpiSpLiveCb" style="color:var(--accent-blue);">-- M</div>
+            <div class="sub-lbl"><span>Valve FCV-201:</span><span id="kpiSpValveSub">--%</span></div>
           </div>
           <div class="kpi-card">
-            <div class="lbl">Reactor / Jacket Temp</div>
+            <div class="lbl">C6H6 Purity / T / Tj</div>
             <div class="num" id="kpiSpTemp" style="color:var(--accent-rose);">-- °C</div>
-            <div class="sub-lbl"><span>Runaway Peak:</span><span id="kpiSpPeakSub">-- °C</span></div>
+            <div class="sub-lbl"><span>Peak / Purity:</span><span id="kpiSpPeakSub">--</span></div>
           </div>
         </div>
-        <div class="chart-container" style="height:210px;">
+        <div class="chart-container" style="height:220px;">
           <canvas id="spRunawayCanvas"></canvas>
         </div>
       </div>
@@ -733,14 +736,17 @@
       cstrBatteryContainer: document.getElementById('cstrBatteryContainer'),
       spSourceBadge: document.getElementById('spSourceBadge'),
       spRunawayBadge: document.getElementById('spRunawayBadge'),
+      spEkfNisBadge: document.getElementById('spEkfNisBadge'),
+      btnToggleSpNmpc: document.getElementById('btnToggleSpNmpc'),
+      btnClosedLoopSp: document.getElementById('btnClosedLoopSp'),
       btnSolveSpPlant: document.getElementById('btnSolveSpPlant'),
       btnProfileSpRunaway: document.getElementById('btnProfileSpRunaway'),
       kpiSpConv: document.getElementById('kpiSpConv'),
       kpiSpConvSub: document.getElementById('kpiSpConvSub'),
       kpiSpSel: document.getElementById('kpiSpSel'),
       kpiSpYieldSub: document.getElementById('kpiSpYieldSub'),
-      kpiSpPurity: document.getElementById('kpiSpPurity'),
-      kpiSpFlowSub: document.getElementById('kpiSpFlowSub'),
+      kpiSpLiveCb: document.getElementById('kpiSpLiveCb'),
+      kpiSpValveSub: document.getElementById('kpiSpValveSub'),
       kpiSpTemp: document.getElementById('kpiSpTemp'),
       kpiSpPeakSub: document.getElementById('kpiSpPeakSub'),
       spRunawayCanvas: document.getElementById('spRunawayCanvas'),
@@ -1371,6 +1377,46 @@
         }
       }
 
+      // Update Live 6-State Series-Parallel EKF + Economic NMPC Telemetry
+      if (frame.sp_control) {
+        const sp = frame.sp_control;
+        if (els.kpiSpLiveCb) {
+          els.kpiSpLiveCb.textContent = `${sp.est_cb_mol_per_l.toFixed(3)} / ${sp.cb_mol_per_l.toFixed(3)} M`;
+        }
+        if (els.kpiSpValveSub) {
+          const solveTxt = sp.nmpc_solve_time_ms != null ? ` · ${sp.nmpc_solve_time_ms.toFixed(1)}ms` : '';
+          els.kpiSpValveSub.textContent = `${sp.cooling_valve_pct.toFixed(1)}%${solveTxt}`;
+        }
+        if (els.kpiSpSel && sp.selectivity_b_pct != null) {
+          els.kpiSpSel.textContent = `${sp.selectivity_b_pct.toFixed(1)}%`;
+        }
+        if (els.kpiSpYieldSub && sp.yield_b_pct != null) {
+          els.kpiSpYieldSub.textContent = `${sp.yield_b_pct.toFixed(1)}%`;
+        }
+        if (els.kpiSpTemp) {
+          els.kpiSpTemp.textContent = `${sp.reactor_temp_c.toFixed(1)} / ${sp.jacket_temp_c.toFixed(1)} °C`;
+        }
+        if (els.spEkfNisBadge) {
+          els.spEkfNisBadge.textContent = `EKF6 NIS: ${sp.ekf_nis.toFixed(2)}`;
+          if (sp.ekf_nis > 9.21) {
+            els.spEkfNisBadge.className = 'nis-badge nis-BAD';
+          } else if (sp.ekf_nis > 5.99) {
+            els.spEkfNisBadge.className = 'nis-badge nis-UNCERTAIN';
+          } else {
+            els.spEkfNisBadge.className = 'nis-badge nis-GOOD';
+          }
+        }
+        if (els.btnToggleSpNmpc) {
+          els.btnToggleSpNmpc.textContent = sp.nmpc_enabled ? 'Economic NMPC: ON' : 'Economic NMPC: OFF';
+          els.btnToggleSpNmpc.style.borderColor = sp.nmpc_enabled ? 'rgba(16,185,129,0.9)' : 'rgba(148,163,184,0.4)';
+          els.btnToggleSpNmpc.style.color = sp.nmpc_enabled ? '#6ee7b7' : '#cbd5e1';
+        }
+        if (els.spRunawayBadge && sp.is_thermal_runaway) {
+          els.spRunawayBadge.className = 'nis-badge nis-BAD';
+          els.spRunawayBadge.textContent = `SP RUNAWAY (${sp.reactor_temp_c.toFixed(1)}°C)`;
+        }
+      }
+
       // Append to history buffer
       history.push(frame);
       if (history.length > maxPoints) history.shift();
@@ -1890,14 +1936,185 @@
           if (els.kpiSpConvSub) els.kpiSpConvSub.textContent = `${s.single_pass_conversion_a_pct.toFixed(1)}% (${s.recycle_iterations} iters)`;
           if (els.kpiSpSel) els.kpiSpSel.textContent = `${s.selectivity_b_pct.toFixed(1)}%`;
           if (els.kpiSpYieldSub) els.kpiSpYieldSub.textContent = `${s.yield_b_pct.toFixed(1)}%`;
-          if (els.kpiSpPurity) els.kpiSpPurity.textContent = `${(s.product_b_purity_mole_fraction * 100).toFixed(1)}%`;
-          if (els.kpiSpFlowSub) els.kpiSpFlowSub.textContent = `${s.purified_benzene_flow_mol_per_s.toFixed(2)} mol/s`;
+          if (els.kpiSpPeakSub) {
+            els.kpiSpPeakSub.textContent = `${(s.product_b_purity_mole_fraction * 100).toFixed(1)}% · ${s.purified_benzene_flow_mol_per_s.toFixed(1)} mol/s`;
+          }
           if (els.kpiSpTemp) els.kpiSpTemp.textContent = `${s.reactor_temp_c.toFixed(1)} / ${s.jacket_outlet_temp_c.toFixed(1)} °C`;
         }
       } catch (e) {
         console.warn('Series-parallel plant solve failed:', e);
       } finally {
         if (els.btnSolveSpPlant) els.btnSolveSpPlant.textContent = 'Solve Recycle Plant';
+      }
+    };
+
+    let spNmpcActive = false;
+
+    window.toggleSeriesParallelNmpc = async function() {
+      const targetState = !spNmpcActive;
+      try {
+        const res = await fetch('/api/series-parallel/control/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nmpc_enabled: targetState })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const t = data.telemetry || {};
+          spNmpcActive = Boolean(t.nmpc_enabled);
+          if (els.btnToggleSpNmpc) {
+            els.btnToggleSpNmpc.textContent = spNmpcActive ? 'Economic NMPC: ON' : 'Economic NMPC: OFF';
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to toggle 6-state Economic NMPC:', e);
+      }
+    };
+
+    function renderSeriesParallelClosedLoop(cl) {
+      if (!cl) return;
+      if (els.spSourceBadge) {
+        els.spSourceBadge.className = 'nis-badge nis-GOOD';
+        els.spSourceBadge.textContent = `EKF6+NMPC (${cl.engine_mode || 'Native'})`;
+      }
+      if (els.spRunawayBadge) {
+        if (cl.open_loop_has_runaway && !cl.closed_loop_has_runaway) {
+          els.spRunawayBadge.className = 'nis-badge nis-GOOD';
+          els.spRunawayBadge.textContent = `NMPC SAFE ${cl.closed_loop_peak_temp_c.toFixed(1)}°C vs OL ${cl.open_loop_peak_temp_c.toFixed(1)}°C`;
+        } else if (cl.closed_loop_has_runaway) {
+          els.spRunawayBadge.className = 'nis-badge nis-BAD';
+          els.spRunawayBadge.textContent = `CL RUNAWAY (${cl.closed_loop_peak_temp_c.toFixed(1)}°C)`;
+        }
+      }
+      if (els.kpiSpLiveCb) {
+        const lastPt = (cl.closed_loop_trajectory || []).slice(-1)[0];
+        if (lastPt && lastPt.est_cb_mol_per_l != null) {
+          els.kpiSpLiveCb.textContent = `${lastPt.est_cb_mol_per_l.toFixed(3)} / ${lastPt.true_cb_mol_per_l.toFixed(3)} M`;
+        }
+      }
+      if (els.kpiSpSel) els.kpiSpSel.textContent = `${cl.closed_loop_final_selectivity_pct.toFixed(1)}%`;
+      if (els.kpiSpPeakSub) els.kpiSpPeakSub.textContent = `OL ${cl.open_loop_peak_temp_c.toFixed(1)}°C | Err ${cl.final_ekf_cb_error.toFixed(4)}M`;
+
+      if (!els.spRunawayCanvas || typeof Chart === 'undefined') return;
+      const ol = cl.open_loop_trajectory || [];
+      const clTraj = cl.closed_loop_trajectory || [];
+      const labels = clTraj.map(p => `${p.time_min.toFixed(2)}m`);
+
+      if (spChartInstance) {
+        spChartInstance.destroy();
+        spChartInstance = null;
+      }
+
+      const ctx = els.spRunawayCanvas.getContext('2d');
+      spChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Closed-Loop T (NMPC+EKF, °C)',
+              data: clTraj.map(p => p.true_temp_c),
+              borderColor: '#10b981',
+              borderWidth: 2.3,
+              pointRadius: 0,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: 'Open-Loop T (Runaway, °C)',
+              data: ol.map(p => p.true_temp_c),
+              borderColor: '#f43f5e',
+              backgroundColor: 'rgba(244, 63, 94, 0.08)',
+              borderWidth: 2.2,
+              pointRadius: 0,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: `Trip (${cl.max_safe_temp_c.toFixed(0)}°C)`,
+              data: clTraj.map(() => cl.max_safe_temp_c),
+              borderColor: 'rgba(251, 113, 133, 0.75)',
+              borderDash: [6, 4],
+              borderWidth: 1.4,
+              pointRadius: 0,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: 'True Cb (CL, mol/L)',
+              data: clTraj.map(p => p.true_cb_mol_per_l),
+              borderColor: '#a855f7',
+              borderWidth: 2.0,
+              pointRadius: 0,
+              yAxisID: 'yConc'
+            },
+            {
+              label: 'EKF Est Cb (mol/L)',
+              data: clTraj.map(p => p.est_cb_mol_per_l),
+              borderColor: '#38bdf8',
+              borderDash: [4, 3],
+              borderWidth: 1.8,
+              pointRadius: 0,
+              yAxisID: 'yConc'
+            },
+            {
+              label: 'Open-Loop Cb (mol/L)',
+              data: ol.map(p => p.true_cb_mol_per_l),
+              borderColor: '#f59e0b',
+              borderDash: [2, 3],
+              borderWidth: 1.6,
+              pointRadius: 0,
+              yAxisID: 'yConc'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: {
+              position: 'top',
+              labels: { boxWidth: 10, font: { family: "'JetBrains Mono', monospace", size: 9.5 }, color: '#94a3b8' }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(51, 65, 85, 0.3)' },
+              ticks: { color: '#64748b', font: { family: 'monospace', size: 9 }, maxTicksLimit: 10 }
+            },
+            yTemp: {
+              type: 'linear',
+              position: 'left',
+              grid: { color: 'rgba(51, 65, 85, 0.3)' },
+              ticks: { color: '#f43f5e', font: { family: 'monospace', size: 9.5 }, callback: v => `${v}°C` }
+            },
+            yConc: {
+              type: 'linear',
+              position: 'right',
+              min: 0,
+              grid: { drawOnChartArea: false },
+              ticks: { color: '#a855f7', font: { family: 'monospace', size: 9.5 }, callback: v => `${v.toFixed(2)}M` }
+            }
+          }
+        }
+      });
+    }
+
+    window.triggerSeriesParallelClosedLoop = async function() {
+      if (els.btnClosedLoopSp) els.btnClosedLoopSp.textContent = 'Running EKF+NMPC...';
+      try {
+        const res = await fetch('/api/series-parallel/closed-loop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (res.ok) {
+          const data = await res.json();
+          renderSeriesParallelClosedLoop(data);
+        }
+      } catch (e) {
+        console.warn('Series-parallel closed-loop run failed:', e);
+      } finally {
+        if (els.btnClosedLoopSp) els.btnClosedLoopSp.textContent = 'Closed-Loop Disturbance';
       }
     };
 
@@ -1922,7 +2139,7 @@
 
     connectWebSocket();
     triggerSeriesParallelPlant();
-    triggerSeriesParallelRunaway();
+    triggerSeriesParallelClosedLoop();
     setInterval(pollAlarms, 1000);
     setInterval(pollBridgeStatus, 1500);
     setInterval(pollIndustrialGateway, 1500);

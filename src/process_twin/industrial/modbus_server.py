@@ -10,7 +10,11 @@ import struct
 import logging
 from typing import Optional, Dict, Any
 
-from process_twin.core.models import PlantTelemetry, ActuatorCommand
+from process_twin.core.models import (
+    PlantTelemetry,
+    ActuatorCommand,
+    SeriesParallelControlConfigCommand,
+)
 
 logger = logging.getLogger("process_twin.modbus")
 
@@ -37,8 +41,11 @@ class ProcessTwinModbusServer:
         self._last_synced_reg_feed_flow = 240
         self._last_synced_reg_disch_flow = 240
         self._last_synced_reg_nmpc_sp = 850
+        self._last_synced_reg_sp_cooling = 550
+        self._last_synced_reg_sp_feed_temp = 519
         self._last_synced_coil_valve = True
         self._last_synced_coil_nmpc = False
+        self._last_synced_coil_sp_nmpc = False
 
         # Metrics
         self.requests_served = 0
@@ -167,6 +174,30 @@ class ProcessTwinModbusServer:
             self._last_synced_reg_nmpc_sp = val
             self.twin.update_nmpc_setpoints(temp_setpoint_c=sp)
 
+        elif addr == 39:  # SP Cooling Valve FCV-201 (% * 10)
+            valve_pct = val / 10.0
+            self._last_synced_reg_sp_cooling = val
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(cooling_valve_pct=valve_pct)
+            )
+
+        elif addr == 40:  # SP Feed Temp (°C * 10)
+            feed_c = val / 10.0
+            self._last_synced_reg_sp_feed_temp = val
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(feed_temp_c=feed_c)
+            )
+
+        elif addr == 41:  # SP Target Cb (mol/L * 1000; 0 clears target to Economic max)
+            if val == 0:
+                self.twin.update_series_parallel_control(
+                    SeriesParallelControlConfigCommand(clear_target_cb=True)
+                )
+            else:
+                self.twin.update_series_parallel_control(
+                    SeriesParallelControlConfigCommand(target_cb_mol_per_l=val / 1000.0)
+                )
+
     def _handle_coil_write(self, addr: int, state: bool) -> None:
         """Dispatches external PLC coil writes directly to the digital twin."""
         if not self.twin:
@@ -179,6 +210,12 @@ class ProcessTwinModbusServer:
         elif addr == 2:  # NMPC Controller Enable/Disable
             self._last_synced_coil_nmpc = state
             self.twin.enable_nmpc(enabled=state)
+
+        elif addr == 6:  # SP Economic NMPC Enable/Disable
+            self._last_synced_coil_sp_nmpc = state
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(nmpc_enabled=state)
+            )
 
         elif addr == 4 and state:  # Pulse: Reset Plant
             self.twin.reset()
@@ -273,3 +310,25 @@ class ProcessTwinModbusServer:
         self.coils[1] = bool(frame.interlock_tripped)
         self.coils[2] = bool(frame.nmpc_enabled)
         self.coils[3] = bool(frame.cstr_battery.has_thermal_runaway) if frame.cstr_battery else False
+
+        # 6-State Series-Parallel CSTR + EKF + Economic NMPC (HR 30..41, Coils 6..7)
+        if frame.sp_control:
+            sp = frame.sp_control
+            self.holding_registers[30] = int(round(sp.ca_mol_per_l * 1000)) & 0xFFFF
+            self.holding_registers[31] = int(round(sp.cb_mol_per_l * 1000)) & 0xFFFF
+            self.holding_registers[32] = int(round(sp.cc_mol_per_l * 1000)) & 0xFFFF
+            self.holding_registers[33] = int(round(sp.cd_mol_per_l * 1000)) & 0xFFFF
+            self.holding_registers[34] = int(round(sp.reactor_temp_c * 10)) & 0xFFFF
+            self.holding_registers[35] = int(round(sp.jacket_temp_c * 10)) & 0xFFFF
+            self.holding_registers[36] = int(round(sp.selectivity_b_pct * 10)) & 0xFFFF
+            self.holding_registers[37] = int(round(sp.est_cb_mol_per_l * 1000)) & 0xFFFF
+            self.holding_registers[38] = int(round(sp.ekf_nis * 100)) & 0xFFFF
+            self.holding_registers[39] = int(round(sp.cooling_valve_pct * 10)) & 0xFFFF
+            self.holding_registers[40] = int(round(sp.feed_temp_c * 10)) & 0xFFFF
+            self.holding_registers[41] = (
+                int(round(sp.target_cb_mol_per_l * 1000)) & 0xFFFF
+                if sp.target_cb_mol_per_l is not None
+                else 0
+            )
+            self.coils[6] = bool(sp.nmpc_enabled)
+            self.coils[7] = bool(sp.is_thermal_runaway)

@@ -268,6 +268,48 @@ class IndustrialTelemetryBridge:
                 "quality": "Good"
             })
 
+        # 6-State Series-Parallel CSTR + EKF + Economic NMPC Tags
+        if frame.sp_control is not None:
+            sp = frame.sp_control
+            sp_quality = "Good" if sp.ekf_nis <= 5.99 else ("Uncertain" if sp.ekf_nis <= 9.21 else "Bad")
+            measurements.extend([
+                {
+                    "timestampUtc": ts_iso,
+                    "sensorTag": "SP-TT-201",
+                    "value": round(float(sp.reactor_temp_c), 2),
+                    "unit": "Celsius",
+                    "quality": sp_quality,
+                },
+                {
+                    "timestampUtc": ts_iso,
+                    "sensorTag": "SP-TT-202",
+                    "value": round(float(sp.jacket_temp_c), 2),
+                    "unit": "Celsius",
+                    "quality": sp_quality,
+                },
+                {
+                    "timestampUtc": ts_iso,
+                    "sensorTag": "SP-AT-201-CB",
+                    "value": round(float(sp.est_cb_mol_per_l), 4),
+                    "unit": "MolPerLiter",
+                    "quality": sp_quality,
+                },
+                {
+                    "timestampUtc": ts_iso,
+                    "sensorTag": "SP-SB-201",
+                    "value": round(float(sp.selectivity_b_pct), 2),
+                    "unit": "Percent",
+                    "quality": "Good",
+                },
+                {
+                    "timestampUtc": ts_iso,
+                    "sensorTag": "SP-TCV-201-NMPC",
+                    "value": round(float(sp.cooling_valve_pct), 2),
+                    "unit": "Percent",
+                    "quality": "Good",
+                },
+            ])
+
         # High-performance wire protocol transmission
         if self.ingestion_mode == "wire":
             wire_lines = [

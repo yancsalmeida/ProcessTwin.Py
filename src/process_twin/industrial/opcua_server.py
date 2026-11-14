@@ -10,7 +10,11 @@ import logging
 from typing import Optional, Dict, Any
 from asyncua import Server, ua, uamethod
 
-from process_twin.core.models import PlantTelemetry, ActuatorCommand
+from process_twin.core.models import (
+    PlantTelemetry,
+    ActuatorCommand,
+    SeriesParallelControlConfigCommand,
+)
 
 logger = logging.getLogger("process_twin.opcua")
 
@@ -133,6 +137,36 @@ class ProcessTwinOpcUaServer:
         self.nodes["nmpc_solve_time_ms"] = await nmpc_obj.add_variable(idx, "SolveTime_ms", 0.0, ua.VariantType.Double)
         self.nodes["nmpc_cost"] = await nmpc_obj.add_variable(idx, "Cost", 0.0, ua.VariantType.Double)
 
+        # 5b. 6-State Series-Parallel CSTR + EKF + Economic NMPC
+        sp_obj = await root_obj.add_object(idx, "SeriesParallelCstr")
+        self.nodes["sp_ca_mol_l"] = await sp_obj.add_variable(idx, "SP_CA_MolPerL", 0.48, ua.VariantType.Double)
+        self.nodes["sp_cb_mol_l"] = await sp_obj.add_variable(idx, "SP_CB_MolPerL", 0.28, ua.VariantType.Double)
+        self.nodes["sp_cc_mol_l"] = await sp_obj.add_variable(idx, "SP_CC_MolPerL", 0.21, ua.VariantType.Double)
+        self.nodes["sp_cd_mol_l"] = await sp_obj.add_variable(idx, "SP_CD_MolPerL", 0.03, ua.VariantType.Double)
+        self.nodes["sp_reactor_temp_c"] = await sp_obj.add_variable(idx, "SP_TT_201", 62.0, ua.VariantType.Double)
+        self.nodes["sp_jacket_temp_c"] = await sp_obj.add_variable(idx, "SP_TT_202_Jacket", 36.0, ua.VariantType.Double)
+        self.nodes["sp_conversion_a_pct"] = await sp_obj.add_variable(idx, "SP_ConversionA_Pct", 52.0, ua.VariantType.Double)
+        self.nodes["sp_yield_b_pct"] = await sp_obj.add_variable(idx, "SP_YieldB_Pct", 28.0, ua.VariantType.Double)
+        self.nodes["sp_selectivity_b_pct"] = await sp_obj.add_variable(idx, "SP_SelectivityB_Pct", 53.8, ua.VariantType.Double)
+        self.nodes["sp_est_cb_mol_l"] = await sp_obj.add_variable(idx, "SP_EKF_CB_MolPerL", 0.28, ua.VariantType.Double)
+        self.nodes["sp_ekf_nis"] = await sp_obj.add_variable(idx, "SP_EKF_NIS", 0.0, ua.VariantType.Double)
+        self.nodes["sp_runaway_alarm"] = await sp_obj.add_variable(idx, "SP_RunawayAlarm", False, ua.VariantType.Boolean)
+        self.nodes["sp_nmpc_solve_time_ms"] = await sp_obj.add_variable(idx, "SP_NMPC_SolveTime_ms", 0.0, ua.VariantType.Double)
+        self.nodes["sp_nmpc_cost"] = await sp_obj.add_variable(idx, "SP_NMPC_Cost", 0.0, ua.VariantType.Double)
+
+        # Writable SP supervisory / manual tags
+        self.nodes["sp_nmpc_enabled"] = await sp_obj.add_variable(idx, "SP_NmpcEnabled", False, ua.VariantType.Boolean)
+        await self.nodes["sp_nmpc_enabled"].set_writable()
+
+        self.nodes["sp_cooling_valve_pct"] = await sp_obj.add_variable(idx, "SP_FCV_201", 55.0, ua.VariantType.Double)
+        await self.nodes["sp_cooling_valve_pct"].set_writable()
+
+        self.nodes["sp_feed_temp_c"] = await sp_obj.add_variable(idx, "SP_FeedTemp_C", 51.85, ua.VariantType.Double)
+        await self.nodes["sp_feed_temp_c"].set_writable()
+
+        self.nodes["sp_target_cb"] = await sp_obj.add_variable(idx, "SP_TargetCb_MolPerL", 0.0, ua.VariantType.Double)
+        await self.nodes["sp_target_cb"].set_writable()
+
         # 6. Callable Methods on Root Object
         twin = self.twin
 
@@ -169,6 +203,10 @@ class ProcessTwinOpcUaServer:
             "nmpc_enabled": False,
             "nmpc_target_temp": 85.0,
             "nmpc_target_ca": 0.5,
+            "sp_nmpc_enabled": False,
+            "sp_cooling_valve_pct": 55.0,
+            "sp_feed_temp_c": 51.85,
+            "sp_target_cb": 0.0,
         }
 
         self.tag_count = len(self.nodes)
@@ -253,6 +291,29 @@ class ProcessTwinOpcUaServer:
         if frame.nmpc_cost is not None:
             await self.nodes["nmpc_cost"].write_value(float(frame.nmpc_cost))
 
+        # 6-State Series-Parallel CSTR + EKF + Economic NMPC
+        if frame.sp_control:
+            sp = frame.sp_control
+            await self.nodes["sp_ca_mol_l"].write_value(float(sp.ca_mol_per_l))
+            await self.nodes["sp_cb_mol_l"].write_value(float(sp.cb_mol_per_l))
+            await self.nodes["sp_cc_mol_l"].write_value(float(sp.cc_mol_per_l))
+            await self.nodes["sp_cd_mol_l"].write_value(float(sp.cd_mol_per_l))
+            await self.nodes["sp_reactor_temp_c"].write_value(float(sp.reactor_temp_c))
+            await self.nodes["sp_jacket_temp_c"].write_value(float(sp.jacket_temp_c))
+            await self.nodes["sp_conversion_a_pct"].write_value(float(sp.conversion_a_pct))
+            await self.nodes["sp_yield_b_pct"].write_value(float(sp.yield_b_pct))
+            await self.nodes["sp_selectivity_b_pct"].write_value(float(sp.selectivity_b_pct))
+            await self.nodes["sp_est_cb_mol_l"].write_value(float(sp.est_cb_mol_per_l))
+            await self.nodes["sp_ekf_nis"].write_value(float(sp.ekf_nis))
+            await self.nodes["sp_runaway_alarm"].write_value(bool(sp.is_thermal_runaway))
+            if sp.nmpc_solve_time_ms is not None:
+                await self.nodes["sp_nmpc_solve_time_ms"].write_value(float(sp.nmpc_solve_time_ms))
+            if sp.nmpc_cost is not None:
+                await self.nodes["sp_nmpc_cost"].write_value(float(sp.nmpc_cost))
+            if sp.nmpc_enabled:
+                await self.nodes["sp_cooling_valve_pct"].write_value(float(sp.cooling_valve_pct))
+                self._last_known_setpoints["sp_cooling_valve_pct"] = float(sp.cooling_valve_pct)
+
     async def check_client_writes(self) -> None:
         """
         Polls writable OPC UA setpoint variables. If an external client (SCADA/PLC)
@@ -296,3 +357,37 @@ class ProcessTwinOpcUaServer:
         if abs(val_nmpc_sp - self._last_known_setpoints["nmpc_target_temp"]) > 0.05:
             self._last_known_setpoints["nmpc_target_temp"] = val_nmpc_sp
             self.twin.update_nmpc_setpoints(temp_setpoint_c=val_nmpc_sp)
+
+        # 7. Series-Parallel Economic NMPC Supervisory Setpoints
+        val_sp_en = await self.nodes["sp_nmpc_enabled"].read_value()
+        if val_sp_en != self._last_known_setpoints["sp_nmpc_enabled"]:
+            self._last_known_setpoints["sp_nmpc_enabled"] = val_sp_en
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(nmpc_enabled=bool(val_sp_en))
+            )
+
+        val_sp_cool = await self.nodes["sp_cooling_valve_pct"].read_value()
+        if abs(val_sp_cool - self._last_known_setpoints["sp_cooling_valve_pct"]) > 0.05:
+            self._last_known_setpoints["sp_cooling_valve_pct"] = val_sp_cool
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(cooling_valve_pct=float(val_sp_cool))
+            )
+
+        val_sp_feed_t = await self.nodes["sp_feed_temp_c"].read_value()
+        if abs(val_sp_feed_t - self._last_known_setpoints["sp_feed_temp_c"]) > 0.05:
+            self._last_known_setpoints["sp_feed_temp_c"] = val_sp_feed_t
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(feed_temp_c=float(val_sp_feed_t))
+            )
+
+        val_sp_target_cb = await self.nodes["sp_target_cb"].read_value()
+        if abs(val_sp_target_cb - self._last_known_setpoints["sp_target_cb"]) > 0.002:
+            self._last_known_setpoints["sp_target_cb"] = val_sp_target_cb
+            if val_sp_target_cb <= 0.0:
+                self.twin.update_series_parallel_control(
+                    SeriesParallelControlConfigCommand(clear_target_cb=True)
+                )
+            else:
+                self.twin.update_series_parallel_control(
+                    SeriesParallelControlConfigCommand(target_cb_mol_per_l=float(val_sp_target_cb))
+                )

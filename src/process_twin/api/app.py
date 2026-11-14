@@ -22,8 +22,12 @@ from process_twin.core.models import (
     SeriesParallelRecyclePlantSummary,
     SeriesParallelPlantRequest,
     SeriesParallelRunawayRequest,
+    SeriesParallelControlConfigCommand,
+    SeriesParallelClosedLoopRequest,
+    SeriesParallelClosedLoopResponse,
     IndustrialGatewayStatus,
 )
+from process_twin.core.series_parallel_control import simulate_series_parallel_closed_loop_comparison
 from process_twin.core.simulator import PlantDigitalTwin
 from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge, BridgeStatus
 from process_twin.core.chemflow_bridge import ChemFlowThermodynamicsBridge, ChemFlowStatus
@@ -242,6 +246,7 @@ async def override_actuators(command: ActuatorCommand) -> dict:
 async def reset_simulation() -> dict:
     """Resets the digital twin to initial steady-state conditions (85°C, 5.0m level, 45% cooling)."""
     twin.reset()
+    twin.reset_series_parallel_control()
     return {"status": "success", "message": "Simulation reset to initial steady-state conditions."}
 
 
@@ -419,6 +424,46 @@ async def simulate_series_parallel_runaway_profile(
     profile = await chemflow_bridge.simulate_series_parallel_runaway_profile(req)
     twin.update_series_parallel_profile(profile.model_dump())
     return profile
+
+
+@app.get("/api/series-parallel/control/status")
+async def get_series_parallel_control_status() -> dict:
+    """Returns real-time 6-state Series-Parallel CSTR state, 6-state EKF covariance/NIS, and Economic NMPC diagnostics."""
+    return twin.get_series_parallel_control_diagnostics()
+
+
+@app.post("/api/series-parallel/control/config")
+async def configure_series_parallel_control(cmd: SeriesParallelControlConfigCommand) -> dict:
+    """Enables/disables Economic NMPC or updates cooling valve, feed disturbance T0, or target Cb setpoint."""
+    return twin.update_series_parallel_control(cmd)
+
+
+@app.post("/api/series-parallel/control/reset")
+async def reset_series_parallel_control() -> dict:
+    """Resets the 6-state Series-Parallel CSTR, EKF, and Economic NMPC to nominal selective conditions."""
+    twin.reset_series_parallel_control()
+    return twin.get_series_parallel_control_diagnostics()
+
+
+@app.post("/api/series-parallel/closed-loop", response_model=SeriesParallelClosedLoopResponse)
+async def simulate_series_parallel_closed_loop(
+    req: Optional[SeriesParallelClosedLoopRequest] = None,
+) -> SeriesParallelClosedLoopResponse:
+    """Runs Open-Loop vs 6-State EKF + Economic NMPC closed-loop thermal disturbance rejection simulation."""
+    params = req or SeriesParallelClosedLoopRequest()
+    result = simulate_series_parallel_closed_loop_comparison(
+        native_core=twin.sp_core,
+        feed_temp_nominal_c=params.feed_temp_nominal_c,
+        disturbance_feed_temp_c=params.disturbance_feed_temp_c,
+        disturbance_step_index=params.disturbance_step_index,
+        jacket_inlet_temp_c=params.jacket_inlet_temp_c,
+        max_safe_temp_c=params.max_safe_temp_c,
+        initial_cooling_valve_pct=params.initial_cooling_valve_pct,
+        dt_min=params.dt_min,
+        steps=params.steps,
+    )
+    twin.latest_sp_closed_loop = result
+    return SeriesParallelClosedLoopResponse(**result)
 
 
 # --- Industrial Protocol Gateway Endpoints (OPC UA & Modbus TCP) ---

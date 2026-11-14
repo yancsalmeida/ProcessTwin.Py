@@ -9,10 +9,23 @@ from process_twin.core.models import (
     PlantStatus,
     TransportProperties,
     CstrBatteryTelemetry,
+    SeriesParallelControlTelemetry,
+    SeriesParallelControlConfigCommand,
 )
 from process_twin.core.alarms import evaluate_safety_alarms
 from process_twin.core.ekf import CstrExtendedKalmanFilter, EkfEstimate
+from process_twin.core.native_reactor import NativeReactorCore
 from process_twin.core.nmpc import CstrNonlinearMpc, NmpcConfig, NmpcResult
+from process_twin.core.series_parallel_control import (
+    SeriesParallelExtendedKalmanFilter,
+    SeriesParallelNonlinearMpc,
+    SpEkfEstimate,
+    SpNmpcConfig,
+    SpNmpcResult,
+    build_series_parallel_params,
+    compute_series_parallel_kpis,
+    step_series_parallel_substepped,
+)
 
 
 class PlantDigitalTwin:
@@ -44,6 +57,21 @@ class PlantDigitalTwin:
 
         # Simulation speed factor (default 5.0x for responsive interactive SCADA feedback)
         self.time_scale = 5.0
+
+        # 6-State Series-Parallel CSTR (A -> B -> C, A -> D) + EKF + Economic NMPC
+        self.sp_core = NativeReactorCore()
+        self.sp_ekf = SeriesParallelExtendedKalmanFilter(native_reactor=self.sp_core)
+        self.sp_nmpc = SeriesParallelNonlinearMpc(config=SpNmpcConfig(), native_reactor=self.sp_core)
+        self.sp_nmpc_enabled: bool = False
+        self.sp_cooling_valve_pct: float = 55.0
+        self.sp_feed_temp_c: float = 51.85
+        self.sp_jacket_inlet_temp_c: float = 21.85
+        self.sp_ca_feed: float = 1.0
+        self.sp_state = (0.48, 0.28, 0.21, 0.03, 62.0 + 273.15, 36.0 + 273.15)
+        self.latest_sp_ekf: Optional[SpEkfEstimate] = None
+        self.latest_sp_nmpc: Optional[SpNmpcResult] = None
+        self.latest_sp_telemetry: Optional[SeriesParallelControlTelemetry] = None
+        self.latest_sp_closed_loop: Optional[dict] = None
 
         # Alarms & events
         self.active_alarms: List[AlarmEvent] = []
@@ -270,6 +298,8 @@ class PlantDigitalTwin:
             # Automated safety response: shut inlet feed valve, disable NMPC, and flood cooling jacket!
             self.interlock_tripped = True
             self.nmpc_enabled = False
+            self.sp_nmpc_enabled = False
+            self.sp_cooling_valve_pct = 100.0
             self.feed_valve_open = False
             self.cooling_valve_pct = 100.0
             frame.nmpc_enabled = False
@@ -278,6 +308,7 @@ class PlantDigitalTwin:
             frame.cooling_valve_pct = 100.0
 
         frame.status = self.status
+        frame.sp_control = self._step_series_parallel(dt_seconds)
 
         # Deduplicate and register active alarms
         for alarm in new_alarms:
@@ -339,4 +370,162 @@ class PlantDigitalTwin:
                 "converged": self.latest_nmpc.converged,
                 "temp_tracking_error": self.latest_nmpc.temp_tracking_error,
             } if self.latest_nmpc else None,
+        }
+
+    def _step_series_parallel(self, dt_seconds: float) -> SeriesParallelControlTelemetry:
+        """Advances the 6-state Series-Parallel CSTR plant, 6-state EKF, and optional Economic NMPC."""
+        dt_min = (max(0.0, float(dt_seconds)) * self.time_scale) / 60.0
+        params = build_series_parallel_params(
+            native_core=self.sp_core,
+            cooling_valve_pct=self.sp_cooling_valve_pct,
+            feed_temp_c=self.sp_feed_temp_c,
+            jacket_inlet_temp_c=self.sp_jacket_inlet_temp_c,
+            ca_feed_mol_per_l=self.sp_ca_feed,
+        )
+
+        if dt_min > 0.0:
+            self.sp_state = step_series_parallel_substepped(self.sp_core, params, self.sp_state, dt_min)
+            ca, cb, cc, cd, t_k, tj_k = self.sp_state
+            meas_temp_c = (t_k - 273.15) + random.gauss(0.0, 0.15)
+            meas_jacket_c = (tj_k - 273.15) + random.gauss(0.0, 0.10)
+            self.latest_sp_ekf = self.sp_ekf.step(
+                dt_min=dt_min,
+                params=params,
+                measured_temp_c=meas_temp_c,
+                measured_jacket_temp_c=meas_jacket_c,
+            )
+
+            if self.sp_nmpc_enabled and not self.interlock_tripped:
+                est = self.latest_sp_ekf
+                self.latest_sp_nmpc = self.sp_nmpc.compute_optimal_move(
+                    current_state_c=(
+                        est.ca_mol_per_l,
+                        est.cb_mol_per_l,
+                        est.cc_mol_per_l,
+                        est.cd_mol_per_l,
+                        est.temp_c,
+                        est.jacket_temp_c,
+                    ),
+                    base_params=params,
+                    u_prev=self.sp_cooling_valve_pct,
+                )
+                self.sp_cooling_valve_pct = self.latest_sp_nmpc.optimal_cooling_valve_pct
+        elif self.latest_sp_ekf is None:
+            ca, cb, cc, cd, t_k, tj_k = self.sp_state
+            self.latest_sp_ekf = self.sp_ekf.step(
+                dt_min=0.0,
+                params=params,
+                measured_temp_c=t_k - 273.15,
+                measured_jacket_temp_c=tj_k - 273.15,
+            )
+
+        ca, cb, cc, cd, t_k, tj_k = self.sp_state
+        t_c = t_k - 273.15
+        tj_c = tj_k - 273.15
+        conv_a, yield_b, sel_b = compute_series_parallel_kpis(ca, cb, params.ca_feed_mol_per_l)
+        est = self.latest_sp_ekf
+
+        telemetry = SeriesParallelControlTelemetry(
+            ca_mol_per_l=round(ca, 4),
+            cb_mol_per_l=round(cb, 4),
+            cc_mol_per_l=round(cc, 4),
+            cd_mol_per_l=round(cd, 4),
+            reactor_temp_c=round(t_c, 2),
+            jacket_temp_c=round(tj_c, 2),
+            conversion_a_pct=round(conv_a, 2),
+            yield_b_pct=round(yield_b, 2),
+            selectivity_b_pct=round(sel_b, 2),
+            est_ca_mol_per_l=est.ca_mol_per_l if est else round(ca, 4),
+            est_cb_mol_per_l=est.cb_mol_per_l if est else round(cb, 4),
+            est_cc_mol_per_l=est.cc_mol_per_l if est else round(cc, 4),
+            est_cd_mol_per_l=est.cd_mol_per_l if est else round(cd, 4),
+            est_temp_c=est.temp_c if est else round(t_c, 2),
+            est_jacket_temp_c=est.jacket_temp_c if est else round(tj_c, 2),
+            ekf_nis=est.nis if est else 0.0,
+            sensor_healthy=est.sensor_healthy if est else True,
+            nmpc_enabled=self.sp_nmpc_enabled,
+            cooling_valve_pct=round(self.sp_cooling_valve_pct, 2),
+            feed_temp_c=round(self.sp_feed_temp_c, 2),
+            jacket_inlet_temp_c=round(self.sp_jacket_inlet_temp_c, 2),
+            max_safe_temp_c=round(self.sp_nmpc.config.max_safe_temp_c, 2),
+            target_cb_mol_per_l=self.sp_nmpc.config.target_cb_mol_per_l,
+            nmpc_solve_time_ms=self.latest_sp_nmpc.solve_time_ms if self.latest_sp_nmpc else None,
+            nmpc_cost=self.latest_sp_nmpc.cost if self.latest_sp_nmpc else None,
+            is_thermal_runaway=(t_c > self.sp_nmpc.config.max_safe_temp_c),
+        )
+        self.latest_sp_telemetry = telemetry
+        return telemetry
+
+    def reset_series_parallel_control(self) -> None:
+        """Resets 6-state Series-Parallel CSTR, EKF, and Economic NMPC to nominal steady state."""
+        self.sp_nmpc_enabled = False
+        self.sp_cooling_valve_pct = 55.0
+        self.sp_feed_temp_c = 51.85
+        self.sp_jacket_inlet_temp_c = 21.85
+        self.sp_state = (0.48, 0.28, 0.21, 0.03, 62.0 + 273.15, 36.0 + 273.15)
+        self.sp_ekf.reset()
+        self.sp_nmpc.reset(initial_u=self.sp_cooling_valve_pct)
+        self.latest_sp_ekf = None
+        self.latest_sp_nmpc = None
+        self._step_series_parallel(0.0)
+
+    def update_series_parallel_control(self, cmd: SeriesParallelControlConfigCommand) -> dict:
+        """Applies operator / OPC UA / Modbus configuration commands to 6-state Series-Parallel control."""
+        if cmd.cooling_valve_pct is not None:
+            self.sp_cooling_valve_pct = max(0.0, min(100.0, float(cmd.cooling_valve_pct)))
+        if cmd.feed_temp_c is not None:
+            self.sp_feed_temp_c = max(10.0, min(180.0, float(cmd.feed_temp_c)))
+        if cmd.jacket_inlet_temp_c is not None:
+            self.sp_jacket_inlet_temp_c = max(-20.0, min(120.0, float(cmd.jacket_inlet_temp_c)))
+
+        self.sp_nmpc.update_config(
+            max_safe_temp_c=cmd.max_safe_temp_c,
+            target_cb_mol_per_l=cmd.target_cb_mol_per_l,
+            clear_target_cb=cmd.clear_target_cb,
+        )
+
+        if cmd.nmpc_enabled is not None:
+            self.sp_nmpc_enabled = bool(cmd.nmpc_enabled)
+            if self.sp_nmpc_enabled:
+                self.sp_nmpc.reset(initial_u=self.sp_cooling_valve_pct)
+
+        snap = self._step_series_parallel(0.0)
+        return self.get_series_parallel_control_diagnostics(snapshot=snap)
+
+    def get_series_parallel_control_diagnostics(
+        self,
+        snapshot: Optional[SeriesParallelControlTelemetry] = None,
+    ) -> dict:
+        """Returns comprehensive diagnostics for the 6-state Series-Parallel EKF and Economic NMPC."""
+        snap = snapshot or self.latest_sp_telemetry or self._step_series_parallel(0.0)
+        return {
+            "telemetry": snap.model_dump(),
+            "ekf": {
+                "cov_trace": self.latest_sp_ekf.cov_trace if self.latest_sp_ekf else None,
+                "temp_residual_c": self.latest_sp_ekf.temp_residual_c if self.latest_sp_ekf else None,
+                "jacket_residual_c": self.latest_sp_ekf.jacket_residual_c if self.latest_sp_ekf else None,
+                "nis": self.latest_sp_ekf.nis if self.latest_sp_ekf else None,
+                "sensor_healthy": self.latest_sp_ekf.sensor_healthy if self.latest_sp_ekf else True,
+            },
+            "nmpc": {
+                "enabled": self.sp_nmpc_enabled,
+                "config": {
+                    "prediction_horizon": self.sp_nmpc.config.prediction_horizon,
+                    "control_horizon": self.sp_nmpc.config.control_horizon,
+                    "dt_step_min": self.sp_nmpc.config.dt_step_min,
+                    "max_safe_temp_c": self.sp_nmpc.config.max_safe_temp_c,
+                    "target_cb_mol_per_l": self.sp_nmpc.config.target_cb_mol_per_l,
+                },
+                "latest_result": {
+                    "optimal_cooling_valve_pct": self.latest_sp_nmpc.optimal_cooling_valve_pct,
+                    "predicted_cb_trajectory": self.latest_sp_nmpc.predicted_cb_trajectory,
+                    "predicted_temp_c_trajectory": self.latest_sp_nmpc.predicted_temp_c_trajectory,
+                    "predicted_selectivity_trajectory": self.latest_sp_nmpc.predicted_selectivity_trajectory,
+                    "planned_control_moves": self.latest_sp_nmpc.planned_control_moves,
+                    "cost": self.latest_sp_nmpc.cost,
+                    "iterations": self.latest_sp_nmpc.iterations,
+                    "solve_time_ms": self.latest_sp_nmpc.solve_time_ms,
+                    "converged": self.latest_sp_nmpc.converged,
+                } if self.latest_sp_nmpc else None,
+            },
         }

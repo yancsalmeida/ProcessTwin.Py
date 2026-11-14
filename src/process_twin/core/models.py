@@ -88,6 +88,7 @@ class PlantTelemetry(BaseModel):
     nmpc_optimal_cooling_pct: Optional[float] = Field(default=None, description="Optimal cooling valve position computed by NMPC optimizer (%)")
     nmpc_solve_time_ms: Optional[float] = Field(default=None, description="Execution time of NMPC optimizer in milliseconds")
     nmpc_cost: Optional[float] = Field(default=None, description="Objective function cost value of optimal trajectory")
+    sp_control: Optional["SeriesParallelControlTelemetry"] = Field(default=None, description="6-state Series-Parallel CSTR EKF & Economic NMPC telemetry")
     nmpc_predicted_temp_trajectory: Optional[List[float]] = Field(default=None, description="Forward predicted temperature trajectory across prediction horizon")
 
 
@@ -256,6 +257,112 @@ class IndustrialGatewayStatus(BaseModel):
     modbus_requests_served: int = 0
     modbus_writes_received: int = 0
     last_sync_utc: Optional[str] = None
+
+
+class SeriesParallelControlTelemetry(BaseModel):
+    """Real-time 6-state Series-Parallel CSTR telemetry with 6-state EKF & Economic NMPC."""
+
+    ca_mol_per_l: float
+    cb_mol_per_l: float
+    cc_mol_per_l: float
+    cd_mol_per_l: float
+    reactor_temp_c: float
+    jacket_temp_c: float
+    conversion_a_pct: float
+    yield_b_pct: float
+    selectivity_b_pct: float
+    est_ca_mol_per_l: float
+    est_cb_mol_per_l: float
+    est_cc_mol_per_l: float
+    est_cd_mol_per_l: float
+    est_temp_c: float
+    est_jacket_temp_c: float
+    ekf_nis: float
+    sensor_healthy: bool = True
+    nmpc_enabled: bool = False
+    cooling_valve_pct: float
+    feed_temp_c: float
+    jacket_inlet_temp_c: float
+    max_safe_temp_c: float = 126.85
+    target_cb_mol_per_l: Optional[float] = None
+    nmpc_solve_time_ms: Optional[float] = None
+    nmpc_cost: Optional[float] = None
+    is_thermal_runaway: bool = False
+
+
+class SeriesParallelControlConfigCommand(BaseModel):
+    """Operator or OPC UA / Modbus configuration update for 6-state Series-Parallel control."""
+
+    nmpc_enabled: Optional[bool] = None
+    cooling_valve_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    feed_temp_c: Optional[float] = Field(default=None, ge=10.0, le=180.0)
+    jacket_inlet_temp_c: Optional[float] = Field(default=None, ge=-20.0, le=120.0)
+    max_safe_temp_c: Optional[float] = Field(default=None, ge=70.0, le=250.0)
+    target_cb_mol_per_l: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    clear_target_cb: bool = False
+
+
+class SeriesParallelClosedLoopRequest(BaseModel):
+    """Request parameters for open-loop vs 6-state EKF + Economic NMPC disturbance rejection."""
+
+    feed_temp_nominal_c: float = Field(default=51.85, ge=10.0, le=150.0)
+    disturbance_feed_temp_c: float = Field(default=76.85, ge=10.0, le=220.0)
+    disturbance_step_index: int = Field(default=12, ge=1, le=200)
+    jacket_inlet_temp_c: float = Field(default=21.85, ge=-25.0, le=120.0)
+    max_safe_temp_c: float = Field(default=126.85, ge=70.0, le=250.0)
+    initial_cooling_valve_pct: float = Field(default=15.0, ge=0.0, le=100.0)
+    dt_min: float = Field(default=0.05, ge=0.005, le=0.25)
+    steps: int = Field(default=80, ge=10, le=250)
+
+
+class SeriesParallelClosedLoopPoint(BaseModel):
+    """Single step snapshot inside open-loop or closed-loop 6-state trajectory."""
+
+    step: int
+    time_min: float
+    feed_temp_c: float
+    cooling_valve_pct: float
+    true_ca_mol_per_l: float
+    true_cb_mol_per_l: float
+    true_cc_mol_per_l: float
+    true_cd_mol_per_l: float
+    true_temp_c: float
+    true_jacket_temp_c: float
+    est_ca_mol_per_l: Optional[float] = None
+    est_cb_mol_per_l: Optional[float] = None
+    est_cc_mol_per_l: Optional[float] = None
+    est_cd_mol_per_l: Optional[float] = None
+    est_temp_c: Optional[float] = None
+    est_jacket_temp_c: Optional[float] = None
+    ekf_nis: Optional[float] = None
+    sensor_healthy: Optional[bool] = None
+    conversion_a_pct: float
+    selectivity_b_pct: float
+    nmpc_solve_time_ms: Optional[float] = None
+    is_thermal_runaway: bool = False
+
+
+class SeriesParallelClosedLoopResponse(BaseModel):
+    """Side-by-side comparison of Open-Loop Runaway vs 6-State EKF + Economic NMPC."""
+
+    engine_mode: str
+    max_safe_temp_c: float
+    disturbance_step: int
+    open_loop_peak_temp_c: float
+    open_loop_has_runaway: bool
+    open_loop_final_cb_mol_per_l: float
+    open_loop_final_selectivity_pct: float
+    closed_loop_peak_temp_c: float
+    closed_loop_has_runaway: bool
+    closed_loop_final_cb_mol_per_l: float
+    closed_loop_final_selectivity_pct: float
+    final_ekf_cb_error: float
+    open_loop_trajectory: List[SeriesParallelClosedLoopPoint]
+    closed_loop_trajectory: List[SeriesParallelClosedLoopPoint]
+
+
+PlantTelemetry.model_rebuild()
+
 
 
 
