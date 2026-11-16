@@ -1808,7 +1808,7 @@ class NativeReactorCore:
         w2_1 = (-w10 * r20 + w00 * r21) * inv_det
 
         r30 = f20 + (cls._ROS3_C31 * w1_0 + cls._ROS3_C32 * w2_0) * inv_dt
-        r31 = f21 + (cls._ROS3_C31 * w1_1 + cls._ROS3_C32 * w2_1) * inv_det
+        r31 = f21 + (cls._ROS3_C31 * w1_1 + cls._ROS3_C32 * w2_1) * inv_dt
         w3_0 = (w11 * r30 - w01 * r31) * inv_det
         w3_1 = (-w10 * r30 + w00 * r31) * inv_det
 
