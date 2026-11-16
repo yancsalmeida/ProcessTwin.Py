@@ -481,6 +481,45 @@ class NativeReactorCore:
                 ]
                 lib.reactor_cstr_series_parallel_step_detailed.restype = ctypes.c_int
 
+            if hasattr(lib, "reactor_cstr_step_ros3"):
+                lib.reactor_cstr_step_ros3.argtypes = [
+                    ctypes.POINTER(CstrParamsFFI),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.c_double,
+                ]
+                lib.reactor_cstr_step_ros3.restype = ctypes.c_int
+
+            if hasattr(lib, "reactor_cstr_series_parallel_step_ros3"):
+                lib.reactor_cstr_series_parallel_step_ros3.argtypes = [
+                    ctypes.POINTER(CstrSeriesParallelParamsFFI),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.c_double,
+                ]
+                lib.reactor_cstr_series_parallel_step_ros3.restype = ctypes.c_int
+
+            if hasattr(lib, "reactor_cstr_series_parallel_step_ros3_detailed"):
+                lib.reactor_cstr_series_parallel_step_ros3_detailed.argtypes = [
+                    ctypes.POINTER(CstrSeriesParallelParamsFFI),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.POINTER(ctypes.c_double),
+                    ctypes.c_double,
+                    ctypes.c_double,
+                    ctypes.c_double,
+                    ctypes.c_double,
+                    ctypes.POINTER(CstrSeriesParallelStateFFI),
+                ]
+                lib.reactor_cstr_series_parallel_step_ros3_detailed.restype = ctypes.c_int
+
             # Bind: int reactor_cstr_series_parallel_batch_step_rk4(...)
             if hasattr(lib, "reactor_cstr_series_parallel_batch_step_rk4"):
                 lib.reactor_cstr_series_parallel_batch_step_rk4.argtypes = [
@@ -966,6 +1005,131 @@ class NativeReactorCore:
         )
         if rc != 0:
             raise RuntimeError(f"reactor_cstr_series_parallel_step_detailed failed with code {rc}")
+        return NativeCstrSeriesParallelState(
+            ca_mol_per_l=c_state.ca_mol_per_l,
+            cb_mol_per_l=c_state.cb_mol_per_l,
+            cc_mol_per_l=c_state.cc_mol_per_l,
+            cd_mol_per_l=c_state.cd_mol_per_l,
+            temp_kelvin=c_state.temp_kelvin,
+            jacket_temp_kelvin=c_state.jacket_temp_kelvin,
+            conversion_a_pct=c_state.conversion_a_pct,
+            yield_b_pct=c_state.yield_b_pct,
+            selectivity_b_pct=c_state.selectivity_b_pct,
+            rate_r1_mol_per_l_min=c_state.rate_r1_mol_per_l_min,
+            rate_r2_mol_per_l_min=c_state.rate_r2_mol_per_l_min,
+            rate_r3_mol_per_l_min=c_state.rate_r3_mol_per_l_min,
+            heat_generated_watts=c_state.heat_generated_watts,
+            heat_removed_watts=c_state.heat_removed_watts,
+            is_thermal_runaway=c_state.is_thermal_runaway,
+        )
+
+    def step_stiff_ros3(
+        self,
+        params: NativeCstrParams,
+        ca: float,
+        temp_k: float,
+        dt_min: float = 0.01,
+        dt: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """Advances 2-variable single-reaction CSTR using L-stable 3rd-order Rosenbrock (ROS3L)."""
+        if dt is not None:
+            dt_min = dt
+        if not self._lib or not hasattr(self._lib, "reactor_cstr_step_ros3"):
+            return self._py_step_ros3(params, ca, temp_k, dt_min)
+        ffi_p = params.to_ffi()
+        c_ca = ctypes.c_double(ca)
+        c_temp = ctypes.c_double(temp_k)
+        rc = self._lib.reactor_cstr_step_ros3(
+            ctypes.byref(ffi_p), ctypes.byref(c_ca), ctypes.byref(c_temp), ctypes.c_double(dt_min)
+        )
+        if rc != 0:
+            raise RuntimeError(f"reactor_cstr_step_ros3 failed with code {rc}")
+        return (c_ca.value, c_temp.value)
+
+    def step_series_parallel_ros3(
+        self,
+        params: NativeCstrSeriesParallelParams,
+        ca: float,
+        cb: float,
+        cc: float,
+        cd: float,
+        temp_k: float,
+        temp_j_k: float,
+        dt_min: float = 0.01,
+        dt: Optional[float] = None,
+    ) -> Tuple[float, float, float, float, float, float]:
+        """Advances 6-variable series-parallel CSTR using single fixed L-stable ROS3L step (exact 6x6 Jacobian)."""
+        if dt is not None:
+            dt_min = dt
+        if not self._lib or not hasattr(self._lib, "reactor_cstr_series_parallel_step_ros3"):
+            return self._py_series_parallel_step_ros3(params, ca, cb, cc, cd, temp_k, temp_j_k, dt_min)
+        ffi_p = params.to_ffi()
+        c_ca = ctypes.c_double(ca)
+        c_cb = ctypes.c_double(cb)
+        c_cc = ctypes.c_double(cc)
+        c_cd = ctypes.c_double(cd)
+        c_temp = ctypes.c_double(temp_k)
+        c_temp_j = ctypes.c_double(temp_j_k)
+        rc = self._lib.reactor_cstr_series_parallel_step_ros3(
+            ctypes.byref(ffi_p),
+            ctypes.byref(c_ca),
+            ctypes.byref(c_cb),
+            ctypes.byref(c_cc),
+            ctypes.byref(c_cd),
+            ctypes.byref(c_temp),
+            ctypes.byref(c_temp_j),
+            ctypes.c_double(dt_min),
+        )
+        if rc != 0:
+            raise RuntimeError(f"reactor_cstr_series_parallel_step_ros3 failed with code {rc}")
+        return (c_ca.value, c_cb.value, c_cc.value, c_cd.value, c_temp.value, c_temp_j.value)
+
+    def step_series_parallel_ros3_detailed(
+        self,
+        params: NativeCstrSeriesParallelParams,
+        ca: float,
+        cb: float,
+        cc: float,
+        cd: float,
+        temp_k: float,
+        temp_j_k: float,
+        dt_min: float = 0.01,
+        rtol: float = 1e-5,
+        atol: float = 1e-7,
+        runaway_threshold_k: float = 400.0,
+        dt: Optional[float] = None,
+    ) -> NativeCstrSeriesParallelState:
+        """Advances 6-variable series-parallel CSTR via adaptive ROS3L(2) stiff integration and returns detailed metrics."""
+        if dt is not None:
+            dt_min = dt
+        if not self._lib or not hasattr(self._lib, "reactor_cstr_series_parallel_step_ros3_detailed"):
+            return self._py_series_parallel_step_ros3_detailed(
+                params, ca, cb, cc, cd, temp_k, temp_j_k, dt_min, rtol, atol, runaway_threshold_k
+            )
+        ffi_p = params.to_ffi()
+        c_ca = ctypes.c_double(ca)
+        c_cb = ctypes.c_double(cb)
+        c_cc = ctypes.c_double(cc)
+        c_cd = ctypes.c_double(cd)
+        c_temp = ctypes.c_double(temp_k)
+        c_temp_j = ctypes.c_double(temp_j_k)
+        c_state = CstrSeriesParallelStateFFI()
+        rc = self._lib.reactor_cstr_series_parallel_step_ros3_detailed(
+            ctypes.byref(ffi_p),
+            ctypes.byref(c_ca),
+            ctypes.byref(c_cb),
+            ctypes.byref(c_cc),
+            ctypes.byref(c_cd),
+            ctypes.byref(c_temp),
+            ctypes.byref(c_temp_j),
+            ctypes.c_double(dt_min),
+            ctypes.c_double(rtol),
+            ctypes.c_double(atol),
+            ctypes.c_double(runaway_threshold_k),
+            ctypes.byref(c_state),
+        )
+        if rc != 0:
+            raise RuntimeError(f"reactor_cstr_series_parallel_step_ros3_detailed failed with code {rc}")
         return NativeCstrSeriesParallelState(
             ca_mol_per_l=c_state.ca_mol_per_l,
             cb_mol_per_l=c_state.cb_mol_per_l,
@@ -1585,4 +1749,282 @@ class NativeReactorCore:
             temp_matrix=temp_m,
             jacket_temp_matrix=temp_j_m,
         )
+
+    _ROS3_GAMMA = 0.435866521508459
+    _ROS3_A21 = 2.2942803602790418
+    _ROS3_C21 = -7.5580027318411718
+    _ROS3_C31 = 12.2256646616911144
+    _ROS3_C32 = 5.7401972086621127
+    _ROS3_M1 = 0.7515765852110374
+    _ROS3_M2 = -0.5743194747305118
+    _ROS3_M3 = 0.3823800600465069
+    _ROS3_E1 = -0.7681987171119269
+    _ROS3_E2 = -0.2367386492284888
+    _ROS3_E3 = 0.3823800600465069
+
+    @classmethod
+    def _py_step_ros3(
+        cls, p: NativeCstrParams, ca: float, temp_k: float, dt: float
+    ) -> Tuple[float, float]:
+        if dt <= 0.0 or p.volume_liters <= 0.0:
+            raise ValueError("Invalid dt or reactor volume for ROS3L step")
+        ca_v = max(0.0, ca)
+        t_v = max(50.0, min(2500.0, temp_k))
+
+        s = p.volumetric_flow_l_per_min / p.volume_liters
+        cg = p.delta_h_j_per_mol / p.rho_cp_j_per_l_k
+        cr = p.ua_j_per_min_k / (p.volume_liters * p.rho_cp_j_per_l_k)
+        k = p.k0_per_min * math.exp(-p.ea_over_r_kelvin / t_v)
+        dr_dt = ca_v * k * p.ea_over_r_kelvin / (t_v * t_v)
+
+        inv_gh = 1.0 / (cls._ROS3_GAMMA * dt)
+        w00 = inv_gh - (-s - k)
+        w01 = dr_dt
+        w10 = -(cg * k)
+        w11 = inv_gh - (-s - cr + cg * dr_dt)
+        det = w00 * w11 - w01 * w10
+        if abs(det) < 1e-15 or not math.isfinite(det):
+            raise RuntimeError("Singular 2x2 Jacobian in _py_step_ros3")
+        inv_det = 1.0 / det
+
+        def rhs2(c: float, t: float) -> Tuple[float, float]:
+            cv = max(0.0, c)
+            tv = max(50.0, min(2500.0, t))
+            r = p.k0_per_min * math.exp(-p.ea_over_r_kelvin / tv) * cv
+            return (
+                s * (p.ca_feed_mol_per_l - cv) - r,
+                s * (p.t_feed_kelvin - tv) + cg * r - cr * (tv - p.t_coolant_kelvin),
+            )
+
+        f10, f11 = rhs2(ca_v, t_v)
+        w1_0 = (w11 * f10 - w01 * f11) * inv_det
+        w1_1 = (-w10 * f10 + w00 * f11) * inv_det
+
+        f20, f21 = rhs2(ca_v + cls._ROS3_A21 * w1_0, t_v + cls._ROS3_A21 * w1_1)
+        inv_dt = 1.0 / dt
+        r20 = f20 + cls._ROS3_C21 * inv_dt * w1_0
+        r21 = f21 + cls._ROS3_C21 * inv_dt * w1_1
+        w2_0 = (w11 * r20 - w01 * r21) * inv_det
+        w2_1 = (-w10 * r20 + w00 * r21) * inv_det
+
+        r30 = f20 + (cls._ROS3_C31 * w1_0 + cls._ROS3_C32 * w2_0) * inv_dt
+        r31 = f21 + (cls._ROS3_C31 * w1_1 + cls._ROS3_C32 * w2_1) * inv_det
+        w3_0 = (w11 * r30 - w01 * r31) * inv_det
+        w3_1 = (-w10 * r30 + w00 * r31) * inv_det
+
+        ca_next = max(0.0, ca_v + cls._ROS3_M1 * w1_0 + cls._ROS3_M2 * w2_0 + cls._ROS3_M3 * w3_0)
+        t_next = max(50.0, min(2500.0, t_v + cls._ROS3_M1 * w1_1 + cls._ROS3_M2 * w2_1 + cls._ROS3_M3 * w3_1))
+        return (ca_next, t_next)
+
+    @staticmethod
+    def _py_solve_lu6(a: List[List[float]], b: List[float]) -> Optional[List[float]]:
+        m = [row[:] for row in a]
+        rhs = b[:]
+        for k in range(6):
+            max_row = k
+            max_val = abs(m[k][k])
+            for r in range(k + 1, 6):
+                val = abs(m[r][k])
+                if val > max_val:
+                    max_val = val
+                    max_row = r
+            if max_val < 1e-15 or not math.isfinite(max_val):
+                return None
+            if max_row != k:
+                m[k], m[max_row] = m[max_row], m[k]
+                rhs[k], rhs[max_row] = rhs[max_row], rhs[k]
+            inv_piv = 1.0 / m[k][k]
+            for r in range(k + 1, 6):
+                factor = m[r][k] * inv_piv
+                for c in range(k + 1, 6):
+                    m[r][c] -= factor * m[k][c]
+                rhs[r] -= factor * rhs[k]
+        x = [0.0] * 6
+        for r in range(5, -1, -1):
+            s = rhs[r]
+            for c in range(r + 1, 6):
+                s -= m[r][c] * x[c]
+            x[r] = s / m[r][r]
+        return x
+
+    @classmethod
+    def _py_series_parallel_ros3_single(
+        cls,
+        p: NativeCstrSeriesParallelParams,
+        x_in: List[float],
+        dt: float,
+    ) -> Optional[Tuple[List[float], List[float]]]:
+        ca = max(0.0, x_in[0])
+        cb = max(0.0, x_in[1])
+        t = max(50.0, min(2500.0, x_in[4]))
+
+        k1 = p.k0_1_per_min * math.exp(-p.ea1_over_r_kelvin / t)
+        k2 = p.k0_2_per_min * math.exp(-p.ea2_over_r_kelvin / t)
+        k3 = p.k0_3_per_min * math.exp(-p.ea3_over_r_kelvin / t)
+        inv_t2 = 1.0 / (t * t)
+        dr1 = ca * k1 * p.ea1_over_r_kelvin * inv_t2
+        dr2 = cb * k2 * p.ea2_over_r_kelvin * inv_t2
+        dr3 = ca * k3 * p.ea3_over_r_kelvin * inv_t2
+
+        s = p.volumetric_flow_l_per_min / p.volume_liters
+        sj = p.jacket_flow_l_per_min / p.jacket_volume_liters
+        c1 = p.delta_h1_j_per_mol / p.rho_cp_j_per_l_k
+        c2 = p.delta_h2_j_per_mol / p.rho_cp_j_per_l_k
+        c3 = p.delta_h3_j_per_mol / p.rho_cp_j_per_l_k
+        hr = p.ua_j_per_min_k / (p.volume_liters * p.rho_cp_j_per_l_k)
+        hj = p.ua_j_per_min_k / (p.jacket_volume_liters * p.jacket_rho_cp_j_per_l_k)
+
+        inv_gh = 1.0 / (cls._ROS3_GAMMA * dt)
+        w = [[inv_gh if i == j else 0.0 for j in range(6)] for i in range(6)]
+        w[0][0] -= -s - k1 - k3
+        w[0][4] -= -(dr1 + dr3)
+        w[1][0] -= k1
+        w[1][1] -= -s - k2
+        w[1][4] -= dr1 - dr2
+        w[2][1] -= k2
+        w[2][2] -= -s
+        w[2][4] -= dr2
+        w[3][0] -= k3
+        w[3][3] -= -s
+        w[3][4] -= dr3
+        w[4][0] -= c1 * k1 + c3 * k3
+        w[4][1] -= c2 * k2
+        w[4][4] -= -s - hr + c1 * dr1 + c2 * dr2 + c3 * dr3
+        w[4][5] -= hr
+        w[5][4] -= hj
+        w[5][5] -= -sj - hj
+
+        f1 = list(cls._py_series_parallel_derivatives(p, *x_in))
+        w1 = cls._py_solve_lu6(w, f1)
+        if w1 is None:
+            return None
+
+        x2 = [x_in[i] + cls._ROS3_A21 * w1[i] for i in range(6)]
+        f2 = list(cls._py_series_parallel_derivatives(p, *x2))
+        inv_dt = 1.0 / dt
+        r2 = [f2[i] + cls._ROS3_C21 * inv_dt * w1[i] for i in range(6)]
+        w2 = cls._py_solve_lu6(w, r2)
+        if w2 is None:
+            return None
+
+        r3 = [f2[i] + (cls._ROS3_C31 * w1[i] + cls._ROS3_C32 * w2[i]) * inv_dt for i in range(6)]
+        w3 = cls._py_solve_lu6(w, r3)
+        if w3 is None:
+            return None
+
+        x_out = [
+            x_in[i] + cls._ROS3_M1 * w1[i] + cls._ROS3_M2 * w2[i] + cls._ROS3_M3 * w3[i]
+            for i in range(6)
+        ]
+        err = [
+            cls._ROS3_E1 * w1[i] + cls._ROS3_E2 * w2[i] + cls._ROS3_E3 * w3[i]
+            for i in range(6)
+        ]
+        if any(not math.isfinite(v) for v in x_out):
+            return None
+        return (x_out, err)
+
+    @classmethod
+    def _py_series_parallel_step_ros3(
+        cls,
+        p: NativeCstrSeriesParallelParams,
+        ca: float,
+        cb: float,
+        cc: float,
+        cd: float,
+        temp_k: float,
+        temp_j_k: float,
+        dt: float,
+    ) -> Tuple[float, float, float, float, float, float]:
+        res = cls._py_series_parallel_ros3_single(p, [ca, cb, cc, cd, temp_k, temp_j_k], dt)
+        if res is None:
+            raise RuntimeError("Series-parallel Python ROS3L step failed")
+        x_next, _ = res
+        return (
+            max(0.0, x_next[0]),
+            max(0.0, x_next[1]),
+            max(0.0, x_next[2]),
+            max(0.0, x_next[3]),
+            max(50.0, min(2500.0, x_next[4])),
+            max(50.0, min(2500.0, x_next[5])),
+        )
+
+    @classmethod
+    def _py_series_parallel_step_ros3_detailed(
+        cls,
+        p: NativeCstrSeriesParallelParams,
+        ca: float,
+        cb: float,
+        cc: float,
+        cd: float,
+        temp_k: float,
+        temp_j_k: float,
+        dt: float,
+        rtol: float,
+        atol: float,
+        threshold_k: float,
+    ) -> NativeCstrSeriesParallelState:
+        rel = rtol if rtol > 0.0 else 1e-5
+        abs_tol = atol if atol > 0.0 else 1e-7
+        x = [ca, cb, cc, cd, temp_k, temp_j_k]
+        t = 0.0
+        h = dt
+        h_min = 1e-8
+        for _ in range(4096):
+            if t >= dt - 1e-12:
+                break
+            if t + h > dt:
+                h = dt - t
+            res = cls._py_series_parallel_ros3_single(p, x, h)
+            if res is None:
+                h *= 0.25
+                if h < h_min:
+                    raise RuntimeError("Adaptive Python ROS3L step size underflowed")
+                continue
+            x_cand, err_vec = res
+            err_norm = math.sqrt(
+                sum((abs(err_vec[i]) / (abs_tol + rel * max(abs(x[i]), abs(x_cand[i])))) ** 2 for i in range(6)) / 6.0
+            )
+            if err_norm <= 1.0 or h <= h_min * 1.1:
+                x = [
+                    max(0.0, x_cand[0]),
+                    max(0.0, x_cand[1]),
+                    max(0.0, x_cand[2]),
+                    max(0.0, x_cand[3]),
+                    max(50.0, min(2500.0, x_cand[4])),
+                    max(50.0, min(2500.0, x_cand[5])),
+                ]
+                t += h
+                fac = 2.0 if err_norm < 1e-6 else min(2.0, max(0.5, 0.9 * (err_norm ** (-1.0 / 3.0))))
+                h *= fac
+            else:
+                h *= max(0.2, min(0.7, 0.9 * (err_norm ** (-1.0 / 3.0))))
+
+        n_ca, n_cb, n_cc, n_cd, n_temp, n_temp_j = x
+        r1, r2, r3 = cls._py_series_parallel_rates(p, n_ca, n_cb, n_temp)
+        ca0 = p.ca_feed_mol_per_l if p.ca_feed_mol_per_l > 1e-12 else 1.0
+        conv_a = ((p.ca_feed_mol_per_l - n_ca) / ca0) * 100.0
+        yield_b = ((n_cb - p.cb_feed_mol_per_l) / ca0) * 100.0
+        total_prod = n_cb + n_cc + n_cd
+        select_b = (n_cb / total_prod * 100.0) if total_prod > 1e-12 else 100.0
+        heat_gen_w = (p.volume_liters * (p.delta_h1_j_per_mol * r1 + p.delta_h2_j_per_mol * r2 + p.delta_h3_j_per_mol * r3)) / 60.0
+        heat_rem_w = (p.ua_j_per_min_k * (n_temp - n_temp_j)) / 60.0
+        return NativeCstrSeriesParallelState(
+            ca_mol_per_l=n_ca,
+            cb_mol_per_l=n_cb,
+            cc_mol_per_l=n_cc,
+            cd_mol_per_l=n_cd,
+            temp_kelvin=n_temp,
+            jacket_temp_kelvin=n_temp_j,
+            conversion_a_pct=conv_a,
+            yield_b_pct=yield_b,
+            selectivity_b_pct=select_b,
+            rate_r1_mol_per_l_min=r1,
+            rate_r2_mol_per_l_min=r2,
+            rate_r3_mol_per_l_min=r3,
+            heat_generated_watts=heat_gen_w,
+            heat_removed_watts=heat_rem_w,
+            is_thermal_runaway=n_temp >= threshold_k,
+        )
+
 

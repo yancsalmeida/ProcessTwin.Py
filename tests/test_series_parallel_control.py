@@ -324,3 +324,51 @@ def test_fastapi_series_parallel_control_endpoints():
         assert "triggerSeriesParallelClosedLoop" in r_ui.text
     finally:
         twin.reset_series_parallel_control()
+
+
+def test_native_and_python_ros3l_stiff_solver_parity_and_runaway_stability():
+    import math
+    from process_twin.core.native_reactor import (
+        NativeCstrParams,
+        NativeCstrSeriesParallelParams,
+        NativeReactorCore,
+    )
+
+    core = NativeReactorCore()
+
+    # 1. Single-reaction 2x2 ROS3L native vs pure-Python parity
+    p2 = NativeCstrParams()
+    ca_n, t_n = core.step_stiff_ros3(p2, ca=1.0, temp_k=350.0, dt_min=0.02)
+    ca_py, t_py = NativeReactorCore._py_step_ros3(p2, ca=1.0, temp_k=350.0, dt=0.02)
+    assert ca_n == pytest.approx(ca_py, abs=1e-7)
+    assert t_n == pytest.approx(t_py, abs=1e-5)
+
+    # 2. 6x6 series-parallel adaptive ROS3L(2) native vs pure-Python parity under severe stiff runaway
+    p6 = NativeCstrSeriesParallelParams(ua_j_per_min_k=60000.0, jacket_flow_l_per_min=20.0)
+    ca, cb, cc, cd, temp_k, tj_k = 1.0, 0.0, 0.0, 0.0, 388.15, 348.15
+    st_py = NativeReactorCore._py_series_parallel_step_ros3_detailed(
+        p6, ca, cb, cc, cd, temp_k, tj_k, dt=0.08, rtol=1e-5, atol=1e-7, threshold_k=420.0
+    )
+    st_nat = core.step_series_parallel_ros3_detailed(
+        p6, ca, cb, cc, cd, temp_k, tj_k, dt_min=0.08, rtol=1e-5, atol=1e-7, runaway_threshold_k=420.0
+    )
+    assert st_nat.temp_kelvin == pytest.approx(st_py.temp_kelvin, abs=1e-4)
+    assert st_nat.cb_mol_per_l == pytest.approx(st_py.cb_mol_per_l, abs=1e-5)
+
+    for _ in range(40):
+        st = core.step_series_parallel_ros3_detailed(
+            p6, ca, cb, cc, cd, temp_k, tj_k, dt_min=0.08, rtol=1e-5, atol=1e-7, runaway_threshold_k=420.0
+        )
+        ca, cb, cc, cd, temp_k, tj_k = (
+            st.ca_mol_per_l,
+            st.cb_mol_per_l,
+            st.cc_mol_per_l,
+            st.cd_mol_per_l,
+            st.temp_kelvin,
+            st.jacket_temp_kelvin,
+        )
+        assert math.isfinite(temp_k)
+        assert 200.0 <= temp_k <= 1000.0
+        assert 0.0 <= ca <= 1.5
+        assert 0.0 <= cb <= 1.5
+
