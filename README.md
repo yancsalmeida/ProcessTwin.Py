@@ -2,15 +2,16 @@
 
 [![Python CI](https://github.com/yancsalmeida/ProcessTwin.Py/actions/workflows/python-ci.yml/badge.svg)](https://github.com/yancsalmeida/ProcessTwin.Py/actions/workflows/python-ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/Tests-113%20Passed%20(100%25)-2ea44f.svg)](#3-run-the-test-suite)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Asyncio](https://img.shields.io/badge/asyncio-event--driven-orange.svg)](https://docs.python.org/3/library/asyncio.html)
+[![OPC UA & Modbus TCP](https://img.shields.io/badge/Industrial-OPC_UA_%7C_Modbus_TCP-38bdf8.svg)](#api-specification)
 [![.NET 8 Engine Bridge](https://img.shields.io/badge/.NET_8_Bridge-Integrated-512BD4?logo=dotnet)](https://github.com/yancsalmeida/IndustrialTelemetry.Engine)
 [![Thermodynamics Engine](https://img.shields.io/badge/PR--EOS-ChemFlow.NET-38bdf8?logo=dotnet)](https://github.com/yancsalmeida/ChemFlow.NET)
 [![Native C11 FFI](https://img.shields.io/badge/C11_FFI-ReactorCore.C-00599C?logo=c)](https://github.com/yancsalmeida/ReactorCore.C)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An asynchronous, event-driven industrial Digital Twin simulating a coupled chemical buffer tank and continuous exothermic stirred-tank reactor (CSTR). Engineered with **FastAPI**, **Asyncio**, **Pydantic v2**, and **aiosqlite**, `ProcessTwin.Py` streams real-time sensor telemetry at 5 Hz over WebSockets, enforces automated Safety Instrumented System (SIS) interlocks, logs time-series data asynchronously, and serves an interactive dark-mode SCADA dashboard.
+An asynchronous, event-driven industrial Digital Twin simulating a coupled chemical buffer tank, single-reaction exothermic CSTR, and **6-state Series-Parallel CSTR with Cooling Jacket ($A \to B \to C,\ A \to D$)**. Engineered with **FastAPI**, **Asyncio**, **Pydantic v2**, **OPC UA**, **Modbus TCP**, **aiosqlite**, and native C11 FFI ([`ReactorCore.C`](https://github.com/yancsalmeida/ReactorCore.C)), `ProcessTwin.Py` supports real-time switching between **RK4** and L-stable **`ROS3L(2)`** stiff integration, executes **6-state EKF + Economic NMPC**, streams 5 Hz WebSocket telemetry, enforces IEC 61511 Safety Instrumented System (SIS) interlocks, and bridges live measurements into PostgreSQL 16 via `IndustrialTelemetry.Engine`.
 
 ![ProcessTwin SCADA Studio Preview](docs/scada_dashboard_preview.png)
 
@@ -18,15 +19,12 @@ An asynchronous, event-driven industrial Digital Twin simulating a coupled chemi
 
 ## Technical Highlights
 
-- **Event-Driven Asynchronous Runtime:** Built on Python's `asyncio` event loop and FastAPI `lifespan` background tasks, executing continuous 5 Hz discrete integration without blocking incoming HTTP requests or WebSocket broadcasts.
-- **Enterprise .NET 8 Telemetry Bridge:** Continuous 1 Hz asynchronous forwarder transmitting sensor snapshots to [**`IndustrialTelemetry.Engine`**](https://github.com/yancsalmeida/IndustrialTelemetry.Engine), managing batch lifecycles (`Scheduled` $\to$ `InProgress` $\to$ `Completed`/`Aborted`), automated batch negotiation, and propagating SIS emergency trip aborts into PostgreSQL 16.
-- **Rigorous Cubic EOS Integration:** Integrates with [**`ChemFlow.NET`**](https://github.com/yancsalmeida/ChemFlow.NET) via asynchronous HTTP client, evaluating non-ideal Peng-Robinson (1976) vapor-liquid equilibria (VLE), exact vapor fraction $\beta$, and molar enthalpy departures for reactor headspace dynamics with automated analytical local fallback.
-- **Physical & Thermodynamic Rigor:** Coupled mass and non-linear dynamic energy balances modeling buffer surge dynamics, Arrhenius reaction kinetics, cooling jacket heat exchange, and Antoine vapor pressure approximation.
-- **Extended Kalman Filter (EKF) State Estimation:** Reconstructs unmeasured internal reactant concentration $C_A(t)$, chemical reaction rate $r(t)$, and conversion percentage $X(t)$ in real-time from noisy thermocouple readings (`TT-101`) using analytical Jacobians and Joseph-stabilized covariance updates, complete with Normalized Innovation Squared (NIS) for sensor drift and anomaly detection.
-- **Transmitter Noise Emulation:** Injects Gaussian white noise ($\mathcal{N}(0, \sigma^2)$) on level, temperature, and pressure signals to emulate real-world 4–20 mA industrial transmitter sensor drift.
-- **Safety Instrumented Systems (SIS / IEC 61511):** Continuous automated evaluation of safety interlocks (HAZOP trip conditions). Automatically halts feed flow ($XV-101$) and floods cooling jackets upon critical level accumulation or thermal runaway.
-- **Non-Blocking Time-Series Persistence:** Asynchronous parameter-safe SQLite storage via `aiosqlite`, archiving plant snapshots and annunciated alarm audit logs with indexed timestamps.
-- **Live SCADA Operator Interface:** Responsive zero-dependency browser HMI with dynamic SVG piping and instrumentation rendering, Canvas strip charts, alarm annunciators, and supervisory setpoint override controls.
+- **Event-Driven Asynchronous Runtime & Industrial Gateways:** Built on FastAPI `lifespan` and `asyncio` with a 5 Hz physics loop, WebSockets (`/ws/telemetry`), a **50+ tag OPC UA Server** (`opc.tcp://0.0.0.0:4840`), and a **Modbus TCP PLC Server** (`0.0.0.0:5020`, HR `0..41`, Coils `0..8`) enabling Hardware/Software-in-the-Loop (SIL) supervisory control from `ChemFlow.NET`.
+- **Real-Time Stiff Solver Switching (`RK4` vs C11 `ROS3L(2)`):** Operators and SCADA/PLC clients can switch the 6-state Series-Parallel CSTR integrator live between substepped RK4 and adaptive L-stable 3rd-order Rosenbrock `ROS3L(2)` via REST (`/api/series-parallel/control/config`), OPC UA (`SP_SolverMode`), Modbus TCP (**Coil 8**), or the SCADA UI.
+- **Enterprise .NET 8 Telemetry Bridge:** Continuous 1 Hz asynchronous forwarder transmitting physical, EKF6, and NMPC sensor snapshots to [**`IndustrialTelemetry.Engine`**](https://github.com/yancsalmeida/IndustrialTelemetry.Engine), managing batch lifecycles (`Scheduled` $\to$ `InProgress` $\to$ `Completed`/`Aborted`), automated batch negotiation, and propagating SIS emergency trip aborts into PostgreSQL 16.
+- **Rigorous Cubic EOS & CSTR Battery Interop:** Integrates with [**`ChemFlow.NET`**](https://github.com/yancsalmeida/ChemFlow.NET) via asynchronous HTTP client, evaluating Peng-Robinson (1976) VLE, fluid transport properties, and plant recycle convergence with local analytical fallback.
+- **Extended Kalman Filter (2-State & 6-State EKF) + Economic NMPC:** Reconstructs unmeasured species $[C_A, C_B, C_C, C_D]$ and reaction rates solely from noisy thermocouple readings using analytical Jacobians, Normalized Innovation Squared ($\chi^2$ NIS) sensor fault detection, and constrained economic MPC control.
+- **Safety Instrumented Systems (SIS / IEC 61511) & Non-Blocking Persistence:** Automated trip interlocks ($XV-101$ shutoff + 100% cooling flood) with indexed `aiosqlite` logging and responsive dark-mode browser SCADA HMI.
 
 ---
 
@@ -273,59 +271,19 @@ uv run uvicorn process_twin.api.app:app --host 127.0.0.1 --port 8000 --reload
 uv run pytest -v
 ```
 
-All 40 unit, integration, FFI bridge, and WebSocket tests pass cleanly:
+All 113 unit, integration, FFI parity, OPC UA, Modbus TCP, EKF/NMPC, ROS3L stiff solver, and WebSocket tests pass cleanly:
 ```text
-tests/test_alarms.py::test_normal_operating_conditions PASSED
-tests/test_alarms.py::test_level_high_warning PASSED
-tests/test_alarms.py::test_level_critical_interlock_trip PASSED
-tests/test_alarms.py::test_temperature_warning_and_runaway PASSED
-tests/test_alarms.py::test_pressure_overpressure_alarms PASSED
-tests/test_api.py::test_get_dashboard PASSED
-tests/test_api.py::test_get_current_telemetry PASSED
-tests/test_api.py::test_override_actuators PASSED
-tests/test_api.py::test_alarms_endpoints PASSED
-tests/test_api.py::test_websocket_telemetry_stream PASSED
-tests/test_bridge.py::test_bridge_status_model_defaults PASSED
-tests/test_bridge.py::test_bridge_check_health_success PASSED
-tests/test_bridge.py::test_bridge_check_health_failure PASSED
-tests/test_bridge.py::test_bridge_ensure_active_batch_existing PASSED
-tests/test_bridge.py::test_bridge_ensure_active_batch_creates_new_if_none PASSED
-tests/test_bridge.py::test_bridge_send_frame_payload_structure PASSED
-tests/test_bridge.py::test_bridge_abort_batch_on_interlock PASSED
-tests/test_bridge.py::test_api_bridge_endpoints PASSED
-tests/test_models.py::test_plant_telemetry_valid PASSED
-tests/test_models.py::test_plant_telemetry_invalid_level PASSED
-tests/test_models.py::test_actuator_command_validation PASSED
-tests/test_models.py::test_alarm_event_creation PASSED
-tests/test_simulator.py::test_simulator_initial_state PASSED
-tests/test_simulator.py::test_mass_balance_accumulation PASSED
-tests/test_simulator.py::test_mass_balance_depletion PASSED
-tests/test_simulator.py::test_automated_interlock_trip_on_high_level PASSED
-tests/test_simulator.py::test_automated_interlock_trip_on_thermal_runaway PASSED
-tests/test_simulator.py::test_alarm_acknowledgment PASSED
-tests/test_storage.py::test_insert_and_retrieve_telemetry PASSED
-tests/test_storage.py::test_insert_and_retrieve_alarms PASSED
-tests/test_native_reactor.py::test_native_library_loaded_and_version PASSED
-tests/test_native_reactor.py::test_default_parameters_parity PASSED
-tests/test_native_reactor.py::test_reaction_rate_parity PASSED
-tests/test_native_reactor.py::test_single_step_rk4_analytical_parity PASSED
-tests/test_native_reactor.py::test_multi_step_trajectory_parity PASSED
-tests/test_native_reactor.py::test_step_detailed_and_runaway PASSED
-tests/test_native_reactor.py::test_graceful_fallback_when_binary_missing PASSED
-
-======================== 40 passed in 0.43s =========================
+======================= 113 passed in ~36s ========================
 ```
 
 ---
 
 ## High-Performance Native C11 FFI Bridge (`ReactorCore.C`)
 
-`ProcessTwin.Py` integrates directly with the compiled C11 numerical engine from [**`ReactorCore.C`**](https://github.com/yancsalmeida/ReactorCore.C) via Python's standard `ctypes` foreign function interface ([`native_reactor.py`](src/process_twin/core/native_reactor.py)):
+`ProcessTwin.Py` integrates directly with the compiled C11 numerical engine from [**`ReactorCore.C`**](https://github.com/yancsalmeida/ReactorCore.C) via Python's `ctypes` foreign function interface ([`native_reactor.py`](src/process_twin/core/native_reactor.py)):
 
-- **C-ABI Struct Marshalling:** Directly maps 80-byte C structures (`CstrParamsFFI`) and telemetry payloads (`CstrStateFFI`) without serialization overhead.
-- **Batch Trajectory Integration:** Offloads multi-thousand-step dynamic Runge-Kutta 4 loops directly to native machine code (`libreactorcore.so`), avoiding Python bytecode dispatch overhead.
-- **Microsecond Latency:** Amortized $O(1)$ single-step execution through pre-allocated thread-local scratchpads in C.
-- **Bit-Level Numerical Parity:** Validated against a pure Python reference solver with zero double-precision deviation ($\Delta < 10^{-10}$).
+- **C-ABI Struct Marshalling:** Directly maps C structures (`CstrParamsFFI`, `CstrSeriesParallelParamsFFI`) without serialization overhead.
+- **Integrators Exposed:** Explicit RK4, SIMD AVX2/FMA Batch trajectories, and **L-stable `ROS3L` / `ROS3L(2)`** (`step_stiff_ros3`, `step_series_parallel_ros3`, `step_series_parallel_ros3_detailed`) with bit-accurate Python fallback.
 
 ### Benchmark: Native C11 vs. Pure Python 3.12 (`benchmarks/bench_reactor_ffi.py`)
 
@@ -344,13 +302,22 @@ tests/test_native_reactor.py::test_graceful_fallback_when_binary_missing PASSED
 |---|---|---|
 | `GET` | `/` | Serves the interactive SCADA Operator Dashboard |
 | `GET` | `/docs` | Interactive Swagger / OpenAPI documentation |
-| `GET` | `/api/telemetry/current` | Returns instantaneous snapshot of plant sensors |
+| `GET` | `/api/telemetry/current` | Returns instantaneous snapshot of plant sensors (including 6-state Series-Parallel telemetry) |
 | `GET` | `/api/telemetry/history?limit=60` | Retrieves chronological historical telemetry from SQLite |
 | `POST` | `/api/actuators` | Applies operator supervisory overrides (cooling valve, feed flow) |
 | `POST` | `/api/simulation/reset` | Resets plant to initial steady-state conditions (85°C) |
 | `GET` | `/api/alarms` | Lists active annunciated alarms and safety trip states |
 | `POST` | `/api/alarms/{id}/acknowledge` | Acknowledges an active safety alarm |
 | `WS` | `/ws/telemetry` | Real-time 5 Hz WebSocket feed streaming JSON telemetry |
+
+### 6-State Series-Parallel CSTR, EKF6, Economic NMPC & ROS3L Solver Control
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/series-parallel/control/status` | Live state, EKF6 NIS diagnostics, Economic NMPC plan, and `solver` (`rk4` / `ros3l`, `native_c11_ros3l`) |
+| `POST` | `/api/series-parallel/control/config` | Configures NMPC enable, cooling valve, feed temp, target $C_B$, or live `solver_mode` (`"rk4"` / `"ros3l"`) |
+| `POST` | `/api/series-parallel/control/reset` | Resets Series-Parallel state, EKF6, Economic NMPC, and solver to nominal steady state |
+| `POST` | `/api/series-parallel/closed-loop` | Runs Open-Loop vs EKF6 + Economic NMPC disturbance comparison (supports `solver_mode`) |
+| `GET` | `/api/industrial/status` | OPC UA (`:4840`, `SP_SolverMode`) & Modbus TCP (`:5020`, HR `0..41`, Coils `0..8`) gateway status |
 
 ### Enterprise .NET 8 Telemetry Bridge
 | Method | Endpoint | Description |
