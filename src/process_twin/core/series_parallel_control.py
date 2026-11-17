@@ -133,6 +133,32 @@ def step_series_parallel_substepped(
     return (ca, cb, cc, cd, temp_k, jacket_k)
 
 
+def step_series_parallel_plant(
+    native_core: NativeReactorCore,
+    params: NativeCstrSeriesParallelParams,
+    state: Tuple[float, float, float, float, float, float],
+    dt_min: float,
+    solver_mode: str = "rk4",
+) -> Tuple[float, float, float, float, float, float]:
+    """Integrates the 6-state Series-Parallel CSTR using explicit RK4 or L-stable ROS3L(2)."""
+    if dt_min <= 0.0:
+        return state
+    if solver_mode == "ros3l":
+        ca, cb, cc, cd, temp_k, jacket_k = state
+        st = native_core.step_series_parallel_ros3_detailed(
+            params, ca, cb, cc, cd, temp_k, jacket_k, dt_min=dt_min
+        )
+        return (
+            st.ca_mol_per_l,
+            st.cb_mol_per_l,
+            st.cc_mol_per_l,
+            st.cd_mol_per_l,
+            st.temp_kelvin,
+            st.jacket_temp_kelvin,
+        )
+    return step_series_parallel_substepped(native_core, params, state, dt_min)
+
+
 def compute_series_parallel_kpis(
     ca: float,
     cb: float,
@@ -684,6 +710,7 @@ def simulate_series_parallel_closed_loop_comparison(
     dt_min: float = 0.05,
     steps: int = 80,
     noise_seed: int = 42,
+    solver_mode: str = "rk4",
 ) -> dict:
     """
     Runs a deterministic side-by-side closed-loop comparison from identical initial conditions
@@ -694,6 +721,7 @@ def simulate_series_parallel_closed_loop_comparison(
     """
     import random
 
+    norm_solver = "ros3l" if str(solver_mode).lower() == "ros3l" else "rk4"
     core = native_core or NativeReactorCore()
     rng = random.Random(noise_seed)
 
@@ -732,7 +760,7 @@ def simulate_series_parallel_closed_loop_comparison(
             feed_temp_c=feed_c,
             jacket_inlet_temp_c=jacket_inlet_temp_c,
         )
-        ol_state = step_series_parallel_substepped(core, ol_params, ol_state, dt_min)
+        ol_state = step_series_parallel_plant(core, ol_params, ol_state, dt_min, solver_mode=norm_solver)
         ol_ca, ol_cb, ol_cc, ol_cd, ol_tk, ol_tjk = ol_state
         ol_tc = ol_tk - 273.15
         ol_tjc = ol_tjk - 273.15
@@ -763,7 +791,7 @@ def simulate_series_parallel_closed_loop_comparison(
             feed_temp_c=feed_c,
             jacket_inlet_temp_c=jacket_inlet_temp_c,
         )
-        cl_state = step_series_parallel_substepped(core, cl_params, cl_state, dt_min)
+        cl_state = step_series_parallel_plant(core, cl_params, cl_state, dt_min, solver_mode=norm_solver)
         cl_ca, cl_cb, cl_cc, cl_cd, cl_tk, cl_tjk = cl_state
         cl_tc = cl_tk - 273.15
         cl_tjc = cl_tjk - 273.15
@@ -817,7 +845,12 @@ def simulate_series_parallel_closed_loop_comparison(
         })
 
     return {
-        "engine_mode": f"Native C11 ({core.get_version()})" if core.is_available else "Python RK4 Fallback",
+        "engine_mode": (
+            (f"Native C11 ({core.get_version()})" + (" [ROS3L]" if norm_solver == "ros3l" else ""))
+            if core.is_available
+            else f"Python {norm_solver.upper()} Fallback"
+        ),
+        "solver_mode": norm_solver,
         "max_safe_temp_c": round(max_safe_temp_c, 2),
         "disturbance_step": disturbance_step_index,
         "open_loop_peak_temp_c": round(ol_peak_temp, 2),

@@ -46,6 +46,7 @@ class ProcessTwinModbusServer:
         self._last_synced_coil_valve = True
         self._last_synced_coil_nmpc = False
         self._last_synced_coil_sp_nmpc = False
+        self._last_synced_coil_sp_ros3 = False
 
         # Metrics
         self.requests_served = 0
@@ -217,6 +218,12 @@ class ProcessTwinModbusServer:
                 SeriesParallelControlConfigCommand(nmpc_enabled=state)
             )
 
+        elif addr == 8:  # SP Solver Mode: False=RK4, True=ROS3L(2)
+            self._last_synced_coil_sp_ros3 = state
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(solver_mode="ros3l" if state else "rk4")
+            )
+
         elif addr == 4 and state:  # Pulse: Reset Plant
             self.twin.reset()
             self.coils[4] = False  # Auto-clear momentary pulse
@@ -332,3 +339,4 @@ class ProcessTwinModbusServer:
             )
             self.coils[6] = bool(sp.nmpc_enabled)
             self.coils[7] = bool(sp.is_thermal_runaway)
+            self.coils[8] = (sp.solver_mode == "ros3l")

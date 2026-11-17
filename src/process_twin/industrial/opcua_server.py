@@ -167,6 +167,9 @@ class ProcessTwinOpcUaServer:
         self.nodes["sp_target_cb"] = await sp_obj.add_variable(idx, "SP_TargetCb_MolPerL", 0.0, ua.VariantType.Double)
         await self.nodes["sp_target_cb"].set_writable()
 
+        self.nodes["sp_solver_mode"] = await sp_obj.add_variable(idx, "SP_SolverMode", "rk4", ua.VariantType.String)
+        await self.nodes["sp_solver_mode"].set_writable()
+
         # 6. Callable Methods on Root Object
         twin = self.twin
 
@@ -207,6 +210,7 @@ class ProcessTwinOpcUaServer:
             "sp_cooling_valve_pct": 55.0,
             "sp_feed_temp_c": 51.85,
             "sp_target_cb": 0.0,
+            "sp_solver_mode": "rk4",
         }
 
         self.tag_count = len(self.nodes)
@@ -313,6 +317,9 @@ class ProcessTwinOpcUaServer:
             if sp.nmpc_enabled:
                 await self.nodes["sp_cooling_valve_pct"].write_value(float(sp.cooling_valve_pct))
                 self._last_known_setpoints["sp_cooling_valve_pct"] = float(sp.cooling_valve_pct)
+            if sp.solver_mode != self._last_known_setpoints["sp_solver_mode"]:
+                self._last_known_setpoints["sp_solver_mode"] = sp.solver_mode
+                await self.nodes["sp_solver_mode"].write_value(str(sp.solver_mode))
 
     async def check_client_writes(self) -> None:
         """
@@ -391,3 +398,10 @@ class ProcessTwinOpcUaServer:
                 self.twin.update_series_parallel_control(
                     SeriesParallelControlConfigCommand(target_cb_mol_per_l=float(val_sp_target_cb))
                 )
+
+        val_sp_solver = str(await self.nodes["sp_solver_mode"].read_value()).strip().lower()
+        if val_sp_solver in ("rk4", "ros3l") and val_sp_solver != self._last_known_setpoints["sp_solver_mode"]:
+            self._last_known_setpoints["sp_solver_mode"] = val_sp_solver
+            self.twin.update_series_parallel_control(
+                SeriesParallelControlConfigCommand(solver_mode=val_sp_solver)
+            )

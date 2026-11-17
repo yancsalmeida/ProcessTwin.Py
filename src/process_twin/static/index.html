@@ -623,6 +623,7 @@
             <span id="spSourceBadge" class="nis-badge nis-GOOD">ChemFlow.NET / Native</span>
             <span id="spRunawayBadge" class="nis-badge nis-GOOD">SELECTIVE NOMINAL</span>
             <span id="spEkfNisBadge" class="nis-badge nis-GOOD">EKF6 NIS: --</span>
+            <button class="btn-ack" id="btnToggleSpSolver" style="padding:0.2rem 0.55rem; border-color:rgba(168,85,247,0.6); color:#d8b4fe;" onclick="toggleSeriesParallelSolver()">Solver: RK4</button>
             <button class="btn-ack" id="btnToggleSpNmpc" style="padding:0.2rem 0.55rem; border-color:rgba(16,185,129,0.6); color:#6ee7b7;" onclick="toggleSeriesParallelNmpc()">Economic NMPC: OFF</button>
             <button class="btn-ack" id="btnClosedLoopSp" style="padding:0.2rem 0.55rem; border-color:rgba(56,189,248,0.6); color:#7dd3fc;" onclick="triggerSeriesParallelClosedLoop()">Closed-Loop Disturbance</button>
             <button class="btn-ack" id="btnSolveSpPlant" style="padding:0.2rem 0.55rem;" onclick="triggerSeriesParallelPlant()">Solve Recycle Plant</button>
@@ -737,6 +738,7 @@
       spSourceBadge: document.getElementById('spSourceBadge'),
       spRunawayBadge: document.getElementById('spRunawayBadge'),
       spEkfNisBadge: document.getElementById('spEkfNisBadge'),
+      btnToggleSpSolver: document.getElementById('btnToggleSpSolver'),
       btnToggleSpNmpc: document.getElementById('btnToggleSpNmpc'),
       btnClosedLoopSp: document.getElementById('btnClosedLoopSp'),
       btnSolveSpPlant: document.getElementById('btnSolveSpPlant'),
@@ -1406,6 +1408,13 @@
             els.spEkfNisBadge.className = 'nis-badge nis-GOOD';
           }
         }
+        if (els.btnToggleSpSolver) {
+          const isRos3 = sp.solver_mode === 'ros3l';
+          spSolverMode = isRos3 ? 'ros3l' : 'rk4';
+          els.btnToggleSpSolver.textContent = isRos3 ? 'Solver: C11 ROS3L(2)' : 'Solver: RK4';
+          els.btnToggleSpSolver.style.borderColor = isRos3 ? 'rgba(168,85,247,0.9)' : 'rgba(148,163,184,0.4)';
+          els.btnToggleSpSolver.style.color = isRos3 ? '#e9d5ff' : '#cbd5e1';
+        }
         if (els.btnToggleSpNmpc) {
           els.btnToggleSpNmpc.textContent = sp.nmpc_enabled ? 'Economic NMPC: ON' : 'Economic NMPC: OFF';
           els.btnToggleSpNmpc.style.borderColor = sp.nmpc_enabled ? 'rgba(16,185,129,0.9)' : 'rgba(148,163,184,0.4)';
@@ -1949,6 +1958,30 @@
     };
 
     let spNmpcActive = false;
+    let spSolverMode = 'rk4';
+
+    window.toggleSeriesParallelSolver = async function() {
+      const nextMode = spSolverMode === 'ros3l' ? 'rk4' : 'ros3l';
+      try {
+        const res = await fetch('/api/series-parallel/control/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ solver_mode: nextMode })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const t = data.telemetry || {};
+          spSolverMode = t.solver_mode === 'ros3l' ? 'ros3l' : 'rk4';
+          if (els.btnToggleSpSolver) {
+            els.btnToggleSpSolver.textContent = spSolverMode === 'ros3l' ? 'Solver: C11 ROS3L(2)' : 'Solver: RK4';
+            els.btnToggleSpSolver.style.borderColor = spSolverMode === 'ros3l' ? 'rgba(168,85,247,0.9)' : 'rgba(148,163,184,0.4)';
+            els.btnToggleSpSolver.style.color = spSolverMode === 'ros3l' ? '#e9d5ff' : '#cbd5e1';
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to toggle 6-state solver mode:', e);
+      }
+    };
 
     window.toggleSeriesParallelNmpc = async function() {
       const targetState = !spNmpcActive;

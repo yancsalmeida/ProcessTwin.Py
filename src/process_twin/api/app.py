@@ -461,6 +461,7 @@ async def simulate_series_parallel_closed_loop(
         initial_cooling_valve_pct=params.initial_cooling_valve_pct,
         dt_min=params.dt_min,
         steps=params.steps,
+        solver_mode=params.solver_mode,
     )
     twin.latest_sp_closed_loop = result
     return SeriesParallelClosedLoopResponse(**result)

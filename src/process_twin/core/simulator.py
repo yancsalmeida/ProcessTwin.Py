@@ -24,7 +24,7 @@ from process_twin.core.series_parallel_control import (
     SpNmpcResult,
     build_series_parallel_params,
     compute_series_parallel_kpis,
-    step_series_parallel_substepped,
+    step_series_parallel_plant,
 )
 
 
@@ -63,6 +63,7 @@ class PlantDigitalTwin:
         self.sp_ekf = SeriesParallelExtendedKalmanFilter(native_reactor=self.sp_core)
         self.sp_nmpc = SeriesParallelNonlinearMpc(config=SpNmpcConfig(), native_reactor=self.sp_core)
         self.sp_nmpc_enabled: bool = False
+        self.sp_solver_mode: str = "rk4"
         self.sp_cooling_valve_pct: float = 55.0
         self.sp_feed_temp_c: float = 51.85
         self.sp_jacket_inlet_temp_c: float = 21.85
@@ -384,7 +385,9 @@ class PlantDigitalTwin:
         )
 
         if dt_min > 0.0:
-            self.sp_state = step_series_parallel_substepped(self.sp_core, params, self.sp_state, dt_min)
+            self.sp_state = step_series_parallel_plant(
+                self.sp_core, params, self.sp_state, dt_min, solver_mode=self.sp_solver_mode
+            )
             ca, cb, cc, cd, t_k, tj_k = self.sp_state
             meas_temp_c = (t_k - 273.15) + random.gauss(0.0, 0.15)
             meas_jacket_c = (tj_k - 273.15) + random.gauss(0.0, 0.10)
@@ -452,6 +455,7 @@ class PlantDigitalTwin:
             nmpc_solve_time_ms=self.latest_sp_nmpc.solve_time_ms if self.latest_sp_nmpc else None,
             nmpc_cost=self.latest_sp_nmpc.cost if self.latest_sp_nmpc else None,
             is_thermal_runaway=(t_c > self.sp_nmpc.config.max_safe_temp_c),
+            solver_mode=self.sp_solver_mode,
         )
         self.latest_sp_telemetry = telemetry
         return telemetry
@@ -459,6 +463,7 @@ class PlantDigitalTwin:
     def reset_series_parallel_control(self) -> None:
         """Resets 6-state Series-Parallel CSTR, EKF, and Economic NMPC to nominal steady state."""
         self.sp_nmpc_enabled = False
+        self.sp_solver_mode = "rk4"
         self.sp_cooling_valve_pct = 55.0
         self.sp_feed_temp_c = 51.85
         self.sp_jacket_inlet_temp_c = 21.85
@@ -477,6 +482,8 @@ class PlantDigitalTwin:
             self.sp_feed_temp_c = max(10.0, min(180.0, float(cmd.feed_temp_c)))
         if cmd.jacket_inlet_temp_c is not None:
             self.sp_jacket_inlet_temp_c = max(-20.0, min(120.0, float(cmd.jacket_inlet_temp_c)))
+        if cmd.solver_mode is not None:
+            self.sp_solver_mode = "ros3l" if cmd.solver_mode == "ros3l" else "rk4"
 
         self.sp_nmpc.update_config(
             max_safe_temp_c=cmd.max_safe_temp_c,
@@ -498,8 +505,16 @@ class PlantDigitalTwin:
     ) -> dict:
         """Returns comprehensive diagnostics for the 6-state Series-Parallel EKF and Economic NMPC."""
         snap = snapshot or self.latest_sp_telemetry or self._step_series_parallel(0.0)
+        has_native_ros3 = bool(
+            self.sp_core._lib and hasattr(self.sp_core._lib, "reactor_cstr_series_parallel_step_ros3_detailed")
+        )
         return {
             "telemetry": snap.model_dump(),
+            "solver": {
+                "mode": self.sp_solver_mode,
+                "native_c11_ros3l": has_native_ros3,
+                "engine_version": self.sp_core.get_version() if self.sp_core.is_available else "Python Fallback",
+            },
             "ekf": {
                 "cov_trace": self.latest_sp_ekf.cov_trace if self.latest_sp_ekf else None,
                 "temp_residual_c": self.latest_sp_ekf.temp_residual_c if self.latest_sp_ekf else None,

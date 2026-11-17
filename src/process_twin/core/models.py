@@ -288,6 +288,7 @@ class SeriesParallelControlTelemetry(BaseModel):
     nmpc_solve_time_ms: Optional[float] = None
     nmpc_cost: Optional[float] = None
     is_thermal_runaway: bool = False
+    solver_mode: Literal["rk4", "ros3l"] = "rk4"
 
 
 class SeriesParallelControlConfigCommand(BaseModel):
@@ -300,6 +301,7 @@ class SeriesParallelControlConfigCommand(BaseModel):
     max_safe_temp_c: Optional[float] = Field(default=None, ge=70.0, le=250.0)
     target_cb_mol_per_l: Optional[float] = Field(default=None, ge=0.0, le=5.0)
     clear_target_cb: bool = False
+    solver_mode: Optional[Literal["rk4", "ros3l"]] = None
 
 
 class SeriesParallelClosedLoopRequest(BaseModel):
@@ -313,6 +315,7 @@ class SeriesParallelClosedLoopRequest(BaseModel):
     initial_cooling_valve_pct: float = Field(default=15.0, ge=0.0, le=100.0)
     dt_min: float = Field(default=0.05, ge=0.005, le=0.25)
     steps: int = Field(default=80, ge=10, le=250)
+    solver_mode: Literal["rk4", "ros3l"] = "rk4"
 
 
 class SeriesParallelClosedLoopPoint(BaseModel):
@@ -346,6 +349,7 @@ class SeriesParallelClosedLoopResponse(BaseModel):
     """Side-by-side comparison of Open-Loop Runaway vs 6-State EKF + Economic NMPC."""
 
     engine_mode: str
+    solver_mode: Literal["rk4", "ros3l"] = "rk4"
     max_safe_temp_c: float
     disturbance_step: int
     open_loop_peak_temp_c: float

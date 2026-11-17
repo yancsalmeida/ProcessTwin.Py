@@ -372,3 +372,84 @@ def test_native_and_python_ros3l_stiff_solver_parity_and_runaway_stability():
         assert 0.0 <= ca <= 1.5
         assert 0.0 <= cb <= 1.5
 
+
+@pytest.mark.asyncio
+async def test_live_twin_ros3l_solver_selector_api_opcua_and_modbus():
+    # 1. FastAPI REST selector + runaway stability under ROS3L(2)
+    client = TestClient(app)
+    try:
+        r_cfg = client.post(
+            "/api/series-parallel/control/config",
+            json={"solver_mode": "ros3l", "feed_temp_c": 140.0, "cooling_valve_pct": 5.0},
+        )
+        assert r_cfg.status_code == 200
+        body = r_cfg.json()
+        assert body["solver"]["mode"] == "ros3l"
+        assert body["telemetry"]["solver_mode"] == "ros3l"
+
+        for _ in range(15):
+            frame = twin.step(dt_seconds=1.0)
+            assert frame.sp_control is not None
+            assert frame.sp_control.solver_mode == "ros3l"
+            assert 20.0 <= frame.sp_control.reactor_temp_c <= 500.0
+
+        r_cl = client.post("/api/series-parallel/closed-loop", json={"steps": 40, "solver_mode": "ros3l"})
+        assert r_cl.status_code == 200
+        cl_body = r_cl.json()
+        assert cl_body["solver_mode"] == "ros3l"
+        assert "ROS3L" in cl_body["engine_mode"]
+        assert cl_body["closed_loop_has_runaway"] is False
+
+        r_ui = client.get("/")
+        assert r_ui.status_code == 200
+        assert "btnToggleSpSolver" in r_ui.text
+    finally:
+        twin.reset_series_parallel_control()
+
+    # 2. OPC UA writable SP_SolverMode node
+    local_twin = PlantDigitalTwin()
+    endpoint = "opc.tcp://127.0.0.1:48411/processtwin/sp-solver-test/"
+    server = ProcessTwinOpcUaServer(endpoint=endpoint, server_name="SP Solver OPC UA", twin_ref=local_twin)
+    await server.start()
+    try:
+        async with Client(endpoint) as ua_client:
+            ns_idx = await ua_client.get_namespace_index(server.namespace_uri)
+            solver_node = await ua_client.nodes.objects.get_child(
+                [f"{ns_idx}:ProcessTwin", f"{ns_idx}:SeriesParallelCstr", f"{ns_idx}:SP_SolverMode"]
+            )
+            assert await solver_node.read_value() == "rk4"
+            await solver_node.write_value("ros3l")
+
+        await server.check_client_writes()
+        assert local_twin.sp_solver_mode == "ros3l"
+
+        frame = local_twin.step(dt_seconds=0.5)
+        await server.sync_telemetry(frame)
+        assert frame.sp_control is not None and frame.sp_control.solver_mode == "ros3l"
+    finally:
+        await server.stop()
+
+    # 3. Modbus TCP Coil 8 toggles ROS3L(2) solver
+    mb_port = 50231
+    mb_server = ProcessTwinModbusServer(host="127.0.0.1", port=mb_port, twin_ref=local_twin)
+    local_twin.reset_series_parallel_control()
+    await mb_server.start()
+    mb_client = AsyncModbusTcpClient("127.0.0.1", port=mb_port)
+    await mb_client.connect()
+    try:
+        assert mb_client.connected
+        await mb_client.write_coil(8, True)
+        assert local_twin.sp_solver_mode == "ros3l"
+        frame = local_twin.step(dt_seconds=0.5)
+        mb_server.sync_telemetry(frame)
+        coil_res = await mb_client.read_coils(8, count=1)
+        assert not coil_res.isError()
+        assert coil_res.bits[0] is True
+
+        await mb_client.write_coil(8, False)
+        assert local_twin.sp_solver_mode == "rk4"
+    finally:
+        mb_client.close()
+        await mb_server.stop()
+
+
