@@ -11,6 +11,8 @@ from process_twin.core.models import (
     CstrBatteryTelemetry,
     SeriesParallelControlTelemetry,
     SeriesParallelControlConfigCommand,
+    FaultInjectionCommand,
+    FaultInjectionStatus,
 )
 from process_twin.core.alarms import evaluate_safety_alarms
 from process_twin.core.ekf import CstrExtendedKalmanFilter, EkfEstimate
@@ -64,6 +66,12 @@ class PlantDigitalTwin:
         self.sp_nmpc = SeriesParallelNonlinearMpc(config=SpNmpcConfig(), native_reactor=self.sp_core)
         self.sp_nmpc_enabled: bool = False
         self.sp_solver_mode: str = "rk4"
+        self.fault_type: str = "none"
+        self.fault_target: str = "SP-TT-201"
+        self.fault_magnitude: float = 0.0
+        self._fault_ticks: int = 0
+        self._fault_accumulated_offset: float = 0.0
+        self._fault_stuck_val: Optional[float] = None
         self.sp_cooling_valve_pct: float = 55.0
         self.sp_feed_temp_c: float = 51.85
         self.sp_jacket_inlet_temp_c: float = 21.85
@@ -234,6 +242,7 @@ class PlantDigitalTwin:
         # Construct measured telemetry with transmitter noise
         noisy_level = max(0.0, self.tank_level_m + random.gauss(0, self.level_noise_std))
         noisy_temp = max(15.0, self.reactor_temp_c + random.gauss(0, self.temp_noise_std))
+        noisy_temp = self._apply_sensor_fault("TT-101", noisy_temp, dt_eff > 0.0)
         noisy_pressure = max(0.5, reactor_pressure + random.gauss(0, self.press_noise_std))
 
         # Run Extended Kalman Filter (EKF) step for unmeasured state & concentration estimation
@@ -384,13 +393,17 @@ class PlantDigitalTwin:
             ca_feed_mol_per_l=self.sp_ca_feed,
         )
 
+        meas_temp_out: Optional[float] = None
         if dt_min > 0.0:
             self.sp_state = step_series_parallel_plant(
                 self.sp_core, params, self.sp_state, dt_min, solver_mode=self.sp_solver_mode
             )
             ca, cb, cc, cd, t_k, tj_k = self.sp_state
-            meas_temp_c = (t_k - 273.15) + random.gauss(0.0, 0.15)
-            meas_jacket_c = (tj_k - 273.15) + random.gauss(0.0, 0.10)
+            raw_temp_c = (t_k - 273.15) + random.gauss(0.0, 0.15)
+            raw_jacket_c = (tj_k - 273.15) + random.gauss(0.0, 0.10)
+            meas_temp_c = self._apply_sensor_fault("SP-TT-201", raw_temp_c, True)
+            meas_jacket_c = self._apply_sensor_fault("SP-TT-202", raw_jacket_c, True)
+            meas_temp_out = round(meas_temp_c, 2)
             self.latest_sp_ekf = self.sp_ekf.step(
                 dt_min=dt_min,
                 params=params,
@@ -456,6 +469,8 @@ class PlantDigitalTwin:
             nmpc_cost=self.latest_sp_nmpc.cost if self.latest_sp_nmpc else None,
             is_thermal_runaway=(t_c > self.sp_nmpc.config.max_safe_temp_c),
             solver_mode=self.sp_solver_mode,
+            measured_reactor_temp_c=meas_temp_out if meas_temp_out is not None else round(t_c, 2),
+            fault_active=(self.fault_type != "none"),
         )
         self.latest_sp_telemetry = telemetry
         return telemetry
@@ -464,6 +479,7 @@ class PlantDigitalTwin:
         """Resets 6-state Series-Parallel CSTR, EKF, and Economic NMPC to nominal steady state."""
         self.sp_nmpc_enabled = False
         self.sp_solver_mode = "rk4"
+        self.clear_fault()
         self.sp_cooling_valve_pct = 55.0
         self.sp_feed_temp_c = 51.85
         self.sp_jacket_inlet_temp_c = 21.85
@@ -544,3 +560,61 @@ class PlantDigitalTwin:
                 } if self.latest_sp_nmpc else None,
             },
         }
+
+    def _apply_sensor_fault(self, sensor_tag: str, nominal_reading: float, dt_active: bool) -> float:
+        """Corrupts sensor transmitter reading when an industrial fault is injected on sensor_tag."""
+        if self.fault_type == "none" or self.fault_target != sensor_tag:
+            return nominal_reading
+
+        if dt_active:
+            self._fault_ticks += 1
+
+        if self.fault_type == "spike":
+            return max(0.0, nominal_reading + self.fault_magnitude)
+        if self.fault_type == "drift":
+            if dt_active:
+                self._fault_accumulated_offset += self.fault_magnitude
+            return max(0.0, nominal_reading + self._fault_accumulated_offset)
+        if self.fault_type == "stuck":
+            if self._fault_stuck_val is None:
+                self._fault_stuck_val = round(nominal_reading, 2)
+            return self._fault_stuck_val
+        if self.fault_type == "noise":
+            sigma = max(0.5, abs(self.fault_magnitude))
+            return max(0.0, nominal_reading + random.gauss(0.0, sigma))
+        return nominal_reading
+
+    def inject_fault(self, cmd: FaultInjectionCommand) -> dict:
+        """Activates chaos/fault injection on the targeted thermocouple."""
+        self.fault_type = cmd.fault_type
+        self.fault_target = cmd.target_sensor
+        self.fault_magnitude = float(cmd.magnitude)
+        self._fault_ticks = 0
+        self._fault_accumulated_offset = 0.0
+        self._fault_stuck_val = None
+        if self.fault_type == "stuck":
+            if self.fault_target == "SP-TT-201":
+                self._fault_stuck_val = round(self.sp_state[4] - 273.15, 2)
+            elif self.fault_target == "SP-TT-202":
+                self._fault_stuck_val = round(self.sp_state[5] - 273.15, 2)
+            else:
+                self._fault_stuck_val = round(self.reactor_temp_c, 2)
+        return self.get_fault_status()
+
+    def clear_fault(self) -> dict:
+        """Clears active fault injection and resets drift/stuck accumulators."""
+        self.fault_type = "none"
+        self.fault_magnitude = 0.0
+        self._fault_ticks = 0
+        self._fault_accumulated_offset = 0.0
+        self._fault_stuck_val = None
+        return self.get_fault_status()
+
+    def get_fault_status(self) -> dict:
+        return FaultInjectionStatus(
+            fault_type=self.fault_type,  # type: ignore[arg-type]
+            target_sensor=self.fault_target,  # type: ignore[arg-type]
+            magnitude=round(self.fault_magnitude, 3),
+            ticks_active=self._fault_ticks,
+            accumulated_offset_c=round(self._fault_accumulated_offset, 3),
+        ).model_dump()

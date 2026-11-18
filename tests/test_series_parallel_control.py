@@ -275,7 +275,12 @@ async def test_modbus_series_parallel_registers_and_coils():
         regs = await client.read_holding_registers(30, count=12)
         assert not regs.isError()
         assert regs.registers[1] == int(round(frame.sp_control.cb_mol_per_l * 1000))
-        assert regs.registers[4] == int(round(frame.sp_control.reactor_temp_c * 10))
+        expected_hr34_temp = (
+            frame.sp_control.measured_reactor_temp_c
+            if frame.sp_control.measured_reactor_temp_c is not None
+            else frame.sp_control.reactor_temp_c
+        )
+        assert regs.registers[4] == int(round(expected_hr34_temp * 10))
         assert regs.registers[6] == int(round(frame.sp_control.selectivity_b_pct * 10))
 
         # Enable Economic NMPC via Coil 6 and update cooling valve / feed temp via HR 39, 40
@@ -451,5 +456,97 @@ async def test_live_twin_ros3l_solver_selector_api_opcua_and_modbus():
     finally:
         mb_client.close()
         await mb_server.stop()
+
+
+@pytest.mark.asyncio
+async def test_telemetry_bridge_store_and_forward_outbox_replay(tmp_path):
+    from process_twin.db.storage import TelemetryDatabase
+    from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge
+
+    db_file = tmp_path / "outbox_test.db"
+    test_db = TelemetryDatabase(str(db_file))
+    await test_db.init_db()
+
+    bridge_client = IndustrialTelemetryBridge(
+        engine_url="http://mock-historian:5100",
+        ingestion_mode="transactional",
+        db=test_db,
+    )
+    local_twin = PlantDigitalTwin()
+    frame1 = local_twin.step(dt_seconds=0.2)
+    frame2 = local_twin.step(dt_seconds=0.2)
+
+    async def offline_post(*args, **kwargs):
+        raise httpx.ConnectError("Simulated Historian down")
+
+    try:
+        # 1. Historian offline -> both frames spool to SQLite outbox without losing data
+        with patch.object(bridge_client, "ensure_active_batch", new_callable=AsyncMock, return_value="batch-resilient-1"):
+            with patch.object(httpx.AsyncClient, "post", side_effect=offline_post):
+                await bridge_client.send_frame(frame1)
+                await bridge_client.send_frame(frame2)
+
+        assert bridge_client.queued_frames == 2
+        assert bridge_client.replayed_frames == 0
+
+        # 2. Historian comes back -> flush_outbox replays both in FIFO order with Idempotency-Key
+        seen_headers = []
+
+        async def online_post(url, json=None, headers=None, **kwargs):
+            seen_headers.append(headers or {})
+            return MagicMock(
+                status_code=200,
+                json=lambda: {"measurementsIngested": len(json["measurements"]), "alertsTriggered": 0},
+            )
+
+        with patch.object(bridge_client, "ensure_active_batch", new_callable=AsyncMock, return_value="batch-resilient-1"):
+            with patch.object(httpx.AsyncClient, "post", side_effect=online_post):
+                replayed = await bridge_client.flush_outbox()
+
+        assert replayed == 2
+        assert bridge_client.queued_frames == 0
+        assert bridge_client.replayed_frames == 2
+        assert all("Idempotency-Key" in h for h in seen_headers)
+    finally:
+        await bridge_client.close()
+
+
+def test_chaos_fault_injection_api_ekf_gating_and_modbus_corruption():
+    client = TestClient(app)
+    try:
+        # 1. Spike fault +45°C on SP-TT-201 raises EKF6 NIS anomaly while bounding state corruption
+        r_spike = client.post(
+            "/api/faults/inject",
+            json={"fault_type": "spike", "target_sensor": "SP-TT-201", "magnitude": 45.0},
+        )
+        assert r_spike.status_code == 200
+        assert r_spike.json()["fault_type"] == "spike"
+
+        frame = twin.step(dt_seconds=0.2)
+        assert frame.sp_control is not None
+        assert frame.sp_control.fault_active is True
+        assert frame.sp_control.ekf_nis > 9.21
+        assert frame.sp_control.sensor_healthy is False
+        assert frame.sp_control.measured_reactor_temp_c > frame.sp_control.reactor_temp_c + 35.0
+        # Outlier gating ensures EKF temperature estimate doesn't blindly follow +45C fault
+        assert abs(frame.sp_control.est_temp_c - frame.sp_control.reactor_temp_c) < 15.0
+
+        # 2. Stuck fault freezes measurement offset cleanly
+        r_stuck = client.post(
+            "/api/faults/inject",
+            json={"fault_type": "stuck", "target_sensor": "SP-TT-201", "magnitude": 0.0},
+        )
+        assert r_stuck.status_code == 200 and r_stuck.json()["fault_type"] == "stuck"
+
+        # 3. Clear fault restores normal status and HTML exposes chaos buttons
+        r_clear = client.post("/api/faults/clear")
+        assert r_clear.status_code == 200 and r_clear.json()["fault_type"] == "none"
+
+        r_ui = client.get("/")
+        assert r_ui.status_code == 200
+        assert "btnInjectSpSpike" in r_ui.text
+    finally:
+        twin.reset_series_parallel_control()
+
 
 

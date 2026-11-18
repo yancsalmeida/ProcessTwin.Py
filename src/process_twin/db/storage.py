@@ -40,6 +40,16 @@ class TelemetryDatabase:
                 );
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS historian_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+
             await db.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry_history(timestamp);")
             await db.commit()
 
@@ -108,3 +118,44 @@ class TelemetryDatabase:
             """, (limit,))
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def enqueue_outbox(self, idempotency_key: str, payload_json: str, created_at: str) -> None:
+        """Spools an undelivered Historian batch payload into persistent SQLite store-and-forward queue."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO historian_outbox (idempotency_key, payload_json, created_at, attempts)
+                VALUES (?, ?, ?, 1);
+                """,
+                (idempotency_key, payload_json, created_at),
+            )
+            await db.execute(
+                """
+                DELETE FROM historian_outbox
+                WHERE id NOT IN (SELECT id FROM historian_outbox ORDER BY id DESC LIMIT 5000);
+                """
+            )
+            await db.commit()
+
+    async def peek_outbox(self, limit: int = 25) -> List[Dict[str, Any]]:
+        """Fetches oldest pending outbox payloads in FIFO order."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT id, idempotency_key, payload_json, created_at, attempts FROM historian_outbox ORDER BY id ASC LIMIT ?;",
+                (max(1, min(limit, 200)),),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def delete_outbox(self, row_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM historian_outbox WHERE id = ?;", (row_id,))
+            await db.commit()
+
+    async def count_outbox(self) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute("SELECT COUNT(*) FROM historian_outbox;")
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+

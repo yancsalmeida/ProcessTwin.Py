@@ -289,6 +289,26 @@ class SeriesParallelControlTelemetry(BaseModel):
     nmpc_cost: Optional[float] = None
     is_thermal_runaway: bool = False
     solver_mode: Literal["rk4", "ros3l"] = "rk4"
+    measured_reactor_temp_c: Optional[float] = None
+    fault_active: bool = False
+
+
+class FaultInjectionCommand(BaseModel):
+    """Chaos / industrial sensor fault injection payload."""
+
+    fault_type: Literal["none", "drift", "stuck", "spike", "noise"] = "none"
+    target_sensor: Literal["SP-TT-201", "SP-TT-202", "TT-101"] = "SP-TT-201"
+    magnitude: float = Field(default=0.0, ge=-150.0, le=150.0)
+
+
+class FaultInjectionStatus(BaseModel):
+    """Current active chaos/fault injection state."""
+
+    fault_type: Literal["none", "drift", "stuck", "spike", "noise"] = "none"
+    target_sensor: Literal["SP-TT-201", "SP-TT-202", "TT-101"] = "SP-TT-201"
+    magnitude: float = 0.0
+    ticks_active: int = 0
+    accumulated_offset_c: float = 0.0
 
 
 class SeriesParallelControlConfigCommand(BaseModel):

@@ -26,6 +26,7 @@ from process_twin.core.models import (
     SeriesParallelClosedLoopRequest,
     SeriesParallelClosedLoopResponse,
     IndustrialGatewayStatus,
+    FaultInjectionCommand,
 )
 from process_twin.core.series_parallel_control import simulate_series_parallel_closed_loop_comparison
 from process_twin.core.simulator import PlantDigitalTwin
@@ -38,7 +39,7 @@ from process_twin.db.storage import TelemetryDatabase
 DB_PATH = os.getenv("PROCESS_TWIN_DB", "processtwin.db")
 db = TelemetryDatabase(DB_PATH)
 twin = PlantDigitalTwin()
-bridge = IndustrialTelemetryBridge()
+bridge = IndustrialTelemetryBridge(db=db)
 chemflow_bridge = ChemFlowThermodynamicsBridge()
 industrial_gateway = IndustrialGateway(twin_ref=twin)
 active_websockets: Set[WebSocket] = set()
@@ -312,6 +313,35 @@ async def get_bridge_batch_summary(batch_id: Optional[str] = None) -> dict:
     if not summary:
         raise HTTPException(status_code=404, detail="Batch summary not available.")
     return summary
+
+
+@app.post("/api/bridge/flush-outbox")
+async def flush_bridge_outbox() -> dict:
+    """Manually replays spooled offline telemetry frames from SQLite into Historian."""
+    replayed = await bridge.flush_outbox()
+    return {
+        "status": "success",
+        "replayed_frames": replayed,
+        "bridge": bridge.get_status().model_dump(),
+    }
+
+
+@app.get("/api/faults/status")
+async def get_fault_status() -> dict:
+    """Returns active chaos / industrial sensor fault injection status."""
+    return twin.get_fault_status()
+
+
+@app.post("/api/faults/inject")
+async def inject_sensor_fault(cmd: FaultInjectionCommand) -> dict:
+    """Injects an industrial sensor fault (drift, stuck, spike, or noise) for resilience testing."""
+    return twin.inject_fault(cmd)
+
+
+@app.post("/api/faults/clear")
+async def clear_sensor_fault() -> dict:
+    """Clears any active sensor fault injection and restores clean measurements."""
+    return twin.clear_fault()
 
 
 @app.get("/api/thermo/current")

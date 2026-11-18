@@ -332,13 +332,20 @@ class SeriesParallelExtendedKalmanFilter:
         nis = max(0.0, nis)
         self.last_nis = nis
 
+        gate_threshold = self.NIS_99_CHI2_2DOF * 4.0
+        gain_scale = (
+            max(0.05, min(1.0, math.sqrt(gate_threshold / nis)))
+            if nis > gate_threshold
+            else 1.0
+        )
+
         # Kalman Gain K = P * H^T * S^-1 in R^(6x2)
         K = [[0.0, 0.0] for _ in range(6)]
         for i in range(6):
             p_i4 = self.P[i][4]
             p_i5 = self.P[i][5]
-            K[i][0] = p_i4 * S_inv[0][0] + p_i5 * S_inv[1][0]
-            K[i][1] = p_i4 * S_inv[0][1] + p_i5 * S_inv[1][1]
+            K[i][0] = (p_i4 * S_inv[0][0] + p_i5 * S_inv[1][0]) * gain_scale
+            K[i][1] = (p_i4 * S_inv[0][1] + p_i5 * S_inv[1][1]) * gain_scale
 
         # State update: x = x + K * nu
         for i in range(6):

@@ -1,3 +1,4 @@
+import json
 import os
 import asyncio
 from datetime import datetime, timezone
@@ -20,6 +21,8 @@ class BridgeStatus(BaseModel):
     alerts_triggered: int = 0
     last_sync_utc: Optional[str] = None
     last_error: Optional[str] = None
+    queued_frames: int = 0
+    replayed_frames: int = 0
 
 
 class IndustrialTelemetryBridge:
@@ -32,7 +35,8 @@ class IndustrialTelemetryBridge:
         self,
         engine_url: Optional[str] = None,
         enabled: bool = True,
-        ingestion_mode: Optional[str] = None
+        ingestion_mode: Optional[str] = None,
+        db: Optional[Any] = None,
     ) -> None:
         self.engine_url = (
             engine_url
@@ -45,12 +49,15 @@ class IndustrialTelemetryBridge:
             or "transactional"
         ).lower()
         self.enabled = enabled
+        self.db = db
         self.connected = False
         self.active_batch_id: Optional[str] = None
         self.active_batch_code: Optional[str] = None
         self.frames_sent = 0
         self.measurements_ingested = 0
         self.alerts_triggered = 0
+        self.queued_frames = 0
+        self.replayed_frames = 0
         self.last_sync_utc: Optional[str] = None
         self.last_error: Optional[str] = None
         self._client: Optional[httpx.AsyncClient] = None
@@ -158,10 +165,6 @@ class IndustrialTelemetryBridge:
         and transmits it to POST /api/telemetry/ingest.
         """
         if not self.enabled:
-            return None
-
-        batch_id = await self.ensure_active_batch()
-        if not batch_id:
             return None
 
         client = self._get_client()
@@ -310,6 +313,12 @@ class IndustrialTelemetryBridge:
                 },
             ])
 
+        idem_key = f"twin-{ts_iso}"
+        batch_id = await self.ensure_active_batch()
+        if not batch_id:
+            await self._spool_measurements(idem_key, measurements, ts_iso)
+            return None
+
         # High-performance wire protocol transmission
         if self.ingestion_mode == "wire":
             wire_lines = [
@@ -350,6 +359,7 @@ class IndustrialTelemetryBridge:
             "batchId": batch_id,
             "measurements": measurements
         }
+        idem_key = f"twin-{ts_iso}"
 
         endpoint = (
             "/api/telemetry/ingest/channel"
@@ -357,8 +367,15 @@ class IndustrialTelemetryBridge:
             else "/api/telemetry/ingest"
         )
 
+        # Replay queued offline payloads in FIFO order before sending fresh frame
+        await self.flush_outbox()
+
         try:
-            resp = await client.post(f"{self.engine_url}{endpoint}", json=payload)
+            resp = await client.post(
+                f"{self.engine_url}{endpoint}",
+                json=payload,
+                headers={"Idempotency-Key": idem_key},
+            )
             if resp.status_code in (200, 202):
                 result = resp.json()
                 self.frames_sent += 1
@@ -376,13 +393,84 @@ class IndustrialTelemetryBridge:
                 self.last_error = f"Ingestion rejected (HTTP 400): {resp.text}"
                 self.active_batch_id = None
                 self.active_batch_code = None
+                await self._spool_measurements(idem_key, measurements, ts_iso)
             else:
                 self.last_error = f"Ingestion failed (HTTP {resp.status_code}): {resp.text}"
+                await self._spool_measurements(idem_key, measurements, ts_iso)
         except Exception as e:
             self.connected = False
             self.last_error = f"Ingestion transport error: {str(e)}"
+            await self._spool_measurements(idem_key, measurements, ts_iso)
 
         return None
+
+    async def _spool_measurements(
+        self,
+        idempotency_key: str,
+        measurements: List[Dict[str, Any]],
+        ts_iso: str,
+    ) -> None:
+        if not self.db:
+            return
+        try:
+            await self.db.enqueue_outbox(idempotency_key, json.dumps(measurements), ts_iso)
+            self.queued_frames = await self.db.count_outbox()
+        except Exception:
+            pass
+
+    async def flush_outbox(self, max_frames: int = 25) -> int:
+        """Drains pending offline telemetry frames from SQLite into Historian FIFO with Idempotency-Key."""
+        if not self.enabled or not self.db:
+            return 0
+
+        pending = await self.db.peek_outbox(limit=max_frames)
+        if not pending:
+            self.queued_frames = 0
+            return 0
+
+        batch_id = await self.ensure_active_batch()
+        if not batch_id:
+            self.queued_frames = await self.db.count_outbox()
+            return 0
+
+        client = self._get_client()
+        endpoint = (
+            "/api/telemetry/ingest/channel"
+            if self.ingestion_mode == "channel"
+            else "/api/telemetry/ingest"
+        )
+        replayed = 0
+        for row in pending:
+            try:
+                measurements = json.loads(row["payload_json"])
+                resp = await client.post(
+                    f"{self.engine_url}{endpoint}",
+                    json={"batchId": batch_id, "measurements": measurements},
+                    headers={"Idempotency-Key": row["idempotency_key"]},
+                )
+                if resp.status_code in (200, 202):
+                    await self.db.delete_outbox(row["id"])
+                    result = resp.json()
+                    replayed += 1
+                    self.replayed_frames += 1
+                    self.measurements_ingested += result.get(
+                        "measurementsIngested",
+                        result.get("acceptedCount", len(measurements)),
+                    )
+                    self.alerts_triggered += result.get("alertsTriggered", 0)
+                    self.connected = True
+                    self.last_error = None
+                else:
+                    if resp.status_code == 400:
+                        self.active_batch_id = None
+                    break
+            except Exception as e:
+                self.connected = False
+                self.last_error = f"Outbox replay error: {str(e)}"
+                break
+
+        self.queued_frames = await self.db.count_outbox()
+        return replayed
 
     async def abort_batch(self, reason: str) -> Optional[Dict[str, Any]]:
         """Invokes POST /api/batches/{id}/abort with mandatory regulatory reason."""
@@ -458,4 +546,6 @@ class IndustrialTelemetryBridge:
             alerts_triggered=self.alerts_triggered,
             last_sync_utc=self.last_sync_utc,
             last_error=self.last_error,
+            queued_frames=self.queued_frames,
+            replayed_frames=self.replayed_frames,
         )

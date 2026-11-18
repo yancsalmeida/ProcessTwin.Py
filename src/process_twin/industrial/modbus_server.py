@@ -325,7 +325,8 @@ class ProcessTwinModbusServer:
             self.holding_registers[31] = int(round(sp.cb_mol_per_l * 1000)) & 0xFFFF
             self.holding_registers[32] = int(round(sp.cc_mol_per_l * 1000)) & 0xFFFF
             self.holding_registers[33] = int(round(sp.cd_mol_per_l * 1000)) & 0xFFFF
-            self.holding_registers[34] = int(round(sp.reactor_temp_c * 10)) & 0xFFFF
+            meas_t = sp.measured_reactor_temp_c if sp.measured_reactor_temp_c is not None else sp.reactor_temp_c
+            self.holding_registers[34] = int(round(max(0.0, meas_t) * 10)) & 0xFFFF
             self.holding_registers[35] = int(round(sp.jacket_temp_c * 10)) & 0xFFFF
             self.holding_registers[36] = int(round(sp.selectivity_b_pct * 10)) & 0xFFFF
             self.holding_registers[37] = int(round(sp.est_cb_mol_per_l * 1000)) & 0xFFFF

@@ -624,6 +624,9 @@
             <span id="spRunawayBadge" class="nis-badge nis-GOOD">SELECTIVE NOMINAL</span>
             <span id="spEkfNisBadge" class="nis-badge nis-GOOD">EKF6 NIS: --</span>
             <button class="btn-ack" id="btnToggleSpSolver" style="padding:0.2rem 0.55rem; border-color:rgba(168,85,247,0.6); color:#d8b4fe;" onclick="toggleSeriesParallelSolver()">Solver: RK4</button>
+            <button class="btn-ack" id="btnInjectSpSpike" style="padding:0.2rem 0.55rem; border-color:rgba(245,158,11,0.6); color:#fcd34d;" onclick="injectSpFault('spike', 35.0)">Fault: +35°C Spike</button>
+            <button class="btn-ack" id="btnInjectSpStuck" style="padding:0.2rem 0.55rem; border-color:rgba(245,158,11,0.6); color:#fcd34d;" onclick="injectSpFault('stuck', 0.0)">Fault: Stuck</button>
+            <button class="btn-ack" id="btnClearSpFault" style="padding:0.2rem 0.55rem; display:none; border-color:rgba(16,185,129,0.6); color:#6ee7b7;" onclick="clearSpFault()">Clear Fault</button>
             <button class="btn-ack" id="btnToggleSpNmpc" style="padding:0.2rem 0.55rem; border-color:rgba(16,185,129,0.6); color:#6ee7b7;" onclick="toggleSeriesParallelNmpc()">Economic NMPC: OFF</button>
             <button class="btn-ack" id="btnClosedLoopSp" style="padding:0.2rem 0.55rem; border-color:rgba(56,189,248,0.6); color:#7dd3fc;" onclick="triggerSeriesParallelClosedLoop()">Closed-Loop Disturbance</button>
             <button class="btn-ack" id="btnSolveSpPlant" style="padding:0.2rem 0.55rem;" onclick="triggerSeriesParallelPlant()">Solve Recycle Plant</button>
@@ -1420,6 +1423,10 @@
           els.btnToggleSpNmpc.style.borderColor = sp.nmpc_enabled ? 'rgba(16,185,129,0.9)' : 'rgba(148,163,184,0.4)';
           els.btnToggleSpNmpc.style.color = sp.nmpc_enabled ? '#6ee7b7' : '#cbd5e1';
         }
+        const btnClearFault = document.getElementById('btnClearSpFault');
+        if (btnClearFault) {
+          btnClearFault.style.display = sp.fault_active ? 'inline-block' : 'none';
+        }
         if (els.spRunawayBadge && sp.is_thermal_runaway) {
           els.spRunawayBadge.className = 'nis-badge nis-BAD';
           els.spRunawayBadge.textContent = `SP RUNAWAY (${sp.reactor_temp_c.toFixed(1)}°C)`;
@@ -1959,6 +1966,30 @@
 
     let spNmpcActive = false;
     let spSolverMode = 'rk4';
+
+    window.injectSpFault = async function(faultType, magnitude) {
+      const res = await fetch('/api/faults/inject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fault_type: faultType,
+          target_sensor: 'SP-TT-201',
+          magnitude: magnitude
+        })
+      });
+      if (res.ok) {
+        const clearBtn = document.getElementById('btnClearSpFault');
+        if (clearBtn) clearBtn.style.display = 'inline-flex';
+      }
+    };
+
+    window.clearSpFault = async function() {
+      const res = await fetch('/api/faults/clear', { method: 'POST' });
+      if (res.ok) {
+        const clearBtn = document.getElementById('btnClearSpFault');
+        if (clearBtn) clearBtn.style.display = 'none';
+      }
+    };
 
     window.toggleSeriesParallelSolver = async function() {
       const nextMode = spSolverMode === 'ros3l' ? 'rk4' : 'ros3l';
