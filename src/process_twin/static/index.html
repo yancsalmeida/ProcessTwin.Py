@@ -338,6 +338,11 @@
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:1rem;">
+      <select id="selRbacRole" title="Industrial RBAC Role Key" style="font-size:0.75rem; padding:0.25rem 0.5rem; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px;">
+        <option value="engineer-admin-key" selected>Role: Engineer</option>
+        <option value="operator-ctrl-key">Role: Operator</option>
+        <option value="viewer-ro-key">Role: Viewer (RO)</option>
+      </select>
       <div style="display:flex; align-items:center; gap:0.35rem; background:#1e293b; padding:0.25rem 0.5rem; border-radius:6px; border:1px solid #334155;">
         <span style="font-size:0.75rem; color:#94a3b8; font-family:var(--font-mono); font-weight:600; margin-right:0.2rem;">Speed:</span>
         <button class="btn-speed" data-speed="1" onclick="setSpeed(1.0)">1x</button>
@@ -676,6 +681,14 @@
   </main>
 
   <script>
+    const origFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const key = document.getElementById('selRbacRole')?.value;
+      const headers = new Headers(init.headers || {});
+      if (key && !headers.has('X-Api-Key')) headers.set('X-Api-Key', key);
+      return origFetch(input, { ...init, headers });
+    };
+
     let history = [];
     const maxPoints = 80;
     let activeChartMode = 'thermal';

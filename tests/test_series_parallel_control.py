@@ -573,5 +573,63 @@ def test_prometheus_metrics_and_otel_trace_propagation():
     assert "processtwin_historian_outbox_queued" in r_metrics.text
 
 
+def test_ekf6_sustained_40c_spike_freezes_update():
+    from process_twin.core.series_parallel_control import (
+        SeriesParallelExtendedKalmanFilter,
+        build_series_parallel_params,
+        step_series_parallel_substepped,
+    )
+
+    ekf = SeriesParallelExtendedKalmanFilter()
+    params = build_series_parallel_params(ekf.native_reactor)
+    true_state = [0.48, 0.28, 0.21, 0.03, 62.0 + 273.15, 36.0 + 273.15]
+
+    for step in range(30):
+        true_state = list(step_series_parallel_substepped(ekf.native_reactor, params, tuple(true_state), 0.05))
+        ekf.predict(0.05, params)
+        _, _, nis = ekf.update((true_state[4] - 273.15) + 40.0, true_state[5] - 273.15, params.ca_feed_mol_per_l)
+        assert nis > ekf.NIS_99_CHI2_2DOF * 10.0, f"Expected hard outlier detection at step {step}"
+        assert abs(ekf.state[4] - true_state[4]) < 5.0, (
+            f"EKF6 drifted {ekf.state[4] - true_state[4]:.2f} K during sustained +40C spike at step {step}"
+        )
+
+
+def test_industrial_rbac_enforcement(monkeypatch):
+    from fastapi.testclient import TestClient
+    from process_twin.api.app import app, twin
+
+    monkeypatch.setenv("INDUSTRIAL_ENFORCE_RBAC", "true")
+    client = TestClient(app)
+    try:
+        # Anonymous POST to protected Engineer endpoint -> 401
+        r_anon = client.post("/api/faults/inject", json={"fault_type": "spike", "target_sensor": "SP-TT-201", "magnitude": 25.0})
+        assert r_anon.status_code == 401
+
+        # Operator calling Engineer-only fault injection -> 403
+        r_op = client.post(
+            "/api/faults/inject",
+            json={"fault_type": "spike", "target_sensor": "SP-TT-201", "magnitude": 25.0},
+            headers={"X-Api-Key": "operator-ctrl-key"},
+        )
+        assert r_op.status_code == 403
+
+        # Operator calling Operator-level /api/bridge/flush-outbox -> 200
+        r_flush = client.post("/api/bridge/flush-outbox", headers={"X-Api-Key": "operator-ctrl-key"})
+        assert r_flush.status_code == 200
+        assert r_flush.headers.get("X-Auth-Role") == "OPERATOR"
+
+        # Engineer calling fault inject -> 200
+        r_eng = client.post(
+            "/api/faults/inject",
+            json={"fault_type": "spike", "target_sensor": "SP-TT-201", "magnitude": 25.0},
+            headers={"X-Api-Key": "engineer-admin-key"},
+        )
+        assert r_eng.status_code == 200
+        assert r_eng.headers.get("X-Auth-Role") == "ENGINEER"
+    finally:
+        twin.clear_fault()
+
+
+
 
 

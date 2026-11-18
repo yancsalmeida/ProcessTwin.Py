@@ -332,10 +332,17 @@ class SeriesParallelExtendedKalmanFilter:
         nis = max(0.0, nis)
         self.last_nis = nis
 
-        gate_threshold = self.NIS_99_CHI2_2DOF * 4.0
+        soft_gate = self.NIS_99_CHI2_2DOF * 4.0
+        hard_reject = self.NIS_99_CHI2_2DOF * 10.0
+        nis_nominal = (nu0 * nu0) / (self.r_temp_k2 + 0.5) + (nu1 * nu1) / (self.r_jacket_k2 + 0.5)
+        if nis > hard_reject or nis_nominal > hard_reject * 1.5:
+            # Hard outlier freeze: reject corrupted sensor update and coast on ODE physics
+            self.last_nis = max(nis, nis_nominal)
+            return (nu0, nu1, self.last_nis)
+
         gain_scale = (
-            max(0.05, min(1.0, math.sqrt(gate_threshold / nis)))
-            if nis > gate_threshold
+            max(0.0, min(1.0, soft_gate / nis))
+            if nis > soft_gate
             else 1.0
         )
 

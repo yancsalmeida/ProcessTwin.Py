@@ -64,7 +64,11 @@ class IndustrialTelemetryBridge:
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=3.0)
+            api_key = os.getenv("TELEMETRY_API_KEY", "operator-ctrl-key")
+            self._client = httpx.AsyncClient(
+                timeout=3.0,
+                headers={"X-Api-Key": api_key},
+            )
         return self._client
 
     async def close(self) -> None:

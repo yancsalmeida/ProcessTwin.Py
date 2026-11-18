@@ -39,6 +39,7 @@ from process_twin.observability import (
     record_step_metrics,
     tracer as otel_tracer,
 )
+from process_twin.security import configure_rbac
 
 # Global engine instances
 DB_PATH = os.getenv("PROCESS_TWIN_DB", "processtwin.db")
@@ -145,6 +146,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+configure_rbac(app)
 configure_observability(app)
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
