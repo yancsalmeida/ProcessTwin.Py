@@ -549,4 +549,29 @@ def test_chaos_fault_injection_api_ekf_gating_and_modbus_corruption():
         twin.reset_series_parallel_control()
 
 
+def test_prometheus_metrics_and_otel_trace_propagation():
+    from fastapi.testclient import TestClient
+    from process_twin.api.app import app, twin, bridge
+    from process_twin.observability import record_step_metrics
+
+    frame = twin.step(dt_seconds=0.2)
+    record_step_metrics(frame, bridge)
+
+    client = TestClient(app)
+    trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+    r_api = client.get(
+        "/api/faults/status",
+        headers={"traceparent": f"00-{trace_id}-00f067aa0ba902b7-01"},
+    )
+    assert r_api.status_code == 200
+    assert r_api.headers.get("X-Trace-Id") == trace_id
+
+    r_metrics = client.get("/metrics")
+    assert r_metrics.status_code == 200
+    assert "processtwin_steps_total" in r_metrics.text
+    assert "processtwin_sp_reactor_temp_c" in r_metrics.text
+    assert "processtwin_historian_outbox_queued" in r_metrics.text
+
+
+
 

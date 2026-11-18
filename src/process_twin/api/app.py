@@ -34,6 +34,11 @@ from process_twin.core.telemetry_bridge import IndustrialTelemetryBridge, Bridge
 from process_twin.core.chemflow_bridge import ChemFlowThermodynamicsBridge, ChemFlowStatus
 from process_twin.industrial.gateway import IndustrialGateway
 from process_twin.db.storage import TelemetryDatabase
+from process_twin.observability import (
+    configure_observability,
+    record_step_metrics,
+    tracer as otel_tracer,
+)
 
 # Global engine instances
 DB_PATH = os.getenv("PROCESS_TWIN_DB", "processtwin.db")
@@ -52,6 +57,7 @@ async def telemetry_background_loop() -> None:
     while True:
         try:
             frame = twin.step(dt_seconds=0.2)
+            record_step_metrics(frame, bridge)
             step_count += 1
 
             # Broadcast to all connected WebSocket clients
@@ -97,10 +103,11 @@ async def telemetry_background_loop() -> None:
 
                 # Forward real-time stream to .NET IndustrialTelemetry.Engine
                 if bridge.enabled:
-                    if frame.interlock_tripped and bridge.active_batch_id:
-                        await bridge.abort_batch(reason="Emergency SIS interlock tripped on ProcessTwin.")
-                    else:
-                        await bridge.send_frame(frame)
+                    with otel_tracer.start_as_current_span("processtwin.historian_sync"):
+                        if frame.interlock_tripped and bridge.active_batch_id:
+                            await bridge.abort_batch(reason="Emergency SIS interlock tripped on ProcessTwin.")
+                        else:
+                            await bridge.send_frame(frame)
 
             await asyncio.sleep(0.2)
         except asyncio.CancelledError:
@@ -138,6 +145,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+configure_observability(app)
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 if STATIC_DIR.exists():
